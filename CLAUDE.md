@@ -278,20 +278,20 @@ Log levels:
 
 Track progress here as sessions are completed:
 
-- [ ] Session 1 — Project scaffold
-- [ ] Session 2 — Kalshi API client
-- [ ] Session 3 — Risk manager
-- [ ] Session 4 — Signal scorer
-- [ ] Session 5 — Bond strategy
-- [ ] Session 6 — Market making strategy
-- [ ] Session 7 — News listener
-- [ ] Session 8 — News arbitrage strategy
-- [ ] Session 9 — Scanner + Executor
-- [ ] Session 10 — Reflection engine
-- [ ] Session 11 — FastAPI backend
-- [ ] Session 12 — Bot main entry point
-- [ ] Session 13 — Next.js PWA UI
-- [ ] Session 14 — Deployment config
+- [x] Session 1 — Project scaffold
+- [x] Session 2 — Kalshi API client
+- [x] Session 3 — Risk manager
+- [x] Session 4 — Signal scorer
+- [x] Session 5 — Bond strategy
+- [x] Session 6 — Market making strategy
+- [x] Session 7 — News listener
+- [x] Session 8 — News arbitrage strategy
+- [x] Session 9 — Scanner + Executor
+- [x] Session 10 — Reflection engine
+- [x] Session 11 — FastAPI backend
+- [x] Session 12 — Bot main entry point
+- [x] Session 13 — Next.js PWA UI
+- [x] Session 14 — Deployment config
 
 -----
 

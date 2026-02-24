@@ -1,0 +1,80 @@
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+CREATE TABLE IF NOT EXISTS trades (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    market_id VARCHAR(255) NOT NULL,
+    market_title TEXT NOT NULL,
+    strategy VARCHAR(50) NOT NULL CHECK (strategy IN ('bond', 'market_making', 'news_arbitrage')),
+    side VARCHAR(10) NOT NULL CHECK (side IN ('yes', 'no')),
+    size INTEGER NOT NULL,
+    entry_price DECIMAL(6,4) NOT NULL,
+    exit_price DECIMAL(6,4),
+    gross_pnl DECIMAL(10,2),
+    fees DECIMAL(10,2),
+    net_pnl DECIMAL(10,2),
+    status VARCHAR(20) NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed', 'cancelled')),
+    entry_reasoning TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    resolved_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS positions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    market_id VARCHAR(255) NOT NULL UNIQUE,
+    market_title TEXT NOT NULL,
+    strategy VARCHAR(50) NOT NULL,
+    side VARCHAR(10) NOT NULL,
+    size INTEGER NOT NULL,
+    entry_price DECIMAL(6,4) NOT NULL,
+    current_price DECIMAL(6,4),
+    unrealized_pnl DECIMAL(10,2),
+    opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS reflections (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    trade_id UUID REFERENCES trades(id),
+    summary TEXT NOT NULL,
+    what_worked TEXT,
+    what_failed TEXT,
+    confidence_score INTEGER CHECK (confidence_score BETWEEN 1 AND 10),
+    strategy_suggestion TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS weekly_reflections (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    week_start DATE NOT NULL,
+    week_end DATE NOT NULL,
+    total_trades INTEGER,
+    win_rate DECIMAL(5,2),
+    net_pnl DECIMAL(10,2),
+    top_strategy VARCHAR(50),
+    summary TEXT,
+    key_learnings TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key VARCHAR(100) PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Default settings
+INSERT INTO settings (key, value) VALUES
+    ('bot_enabled', 'true'),
+    ('bond_strategy_enabled', 'true'),
+    ('market_making_enabled', 'true'),
+    ('news_arbitrage_enabled', 'true'),
+    ('max_position_pct', '0.15'),
+    ('daily_loss_limit_pct', '0.03'),
+    ('current_bankroll', '5000')
+ON CONFLICT (key) DO NOTHING;
+
+CREATE INDEX IF NOT EXISTS idx_trades_created_at ON trades(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
+CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy);
+CREATE INDEX IF NOT EXISTS idx_reflections_trade_id ON reflections(trade_id);
+CREATE INDEX IF NOT EXISTS idx_reflections_created_at ON reflections(created_at DESC);
