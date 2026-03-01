@@ -1,6 +1,7 @@
 """
-Reflection Engine — uses Claude to generate trade post-mortems and weekly
-summary reports. Runs non-blocking; never delays trade execution.
+Reflection Engine — uses an LLM (Claude or MiniMax Coding Plan) to generate
+trade post-mortems and weekly summary reports. Runs non-blocking; never delays
+trade execution.
 """
 import json
 import logging
@@ -9,11 +10,18 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import anthropic
-from sqlalchemy import select, func
+from sqlalchemy import select, and_
 from dotenv import load_dotenv
+
+from bot.intelligence.param_guardrails import TUNABLE_PARAMS, validate_proposed_value
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+# MiniMax Coding Plan is Anthropic API–compatible; use base_url + model when key is set
+MINIMAX_BASE_URL = "https://api.minimaxi.com/anthropic"
+MINIMAX_MODEL = "minimax-m2.5-highspeed"
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
 
 _REFLECT_SYSTEM = (
     "You are a trading journal AI for a prediction market bot. "
@@ -38,14 +46,44 @@ _WEEKLY_SYSTEM = (
     "Provide honest, data-driven weekly summaries. Return JSON only."
 )
 
+_RECOMMEND_SYSTEM = (
+    "You are a parameter tuning advisor for a prediction market trading bot. "
+    "Based on recent trade performance and current parameter values, suggest "
+    "specific parameter changes that could improve results. Be conservative — "
+    "only recommend changes with clear evidence. Return JSON only."
+)
+
+
+def _llm_client():
+    """Return AsyncAnthropic client for MiniMax (Coding Plan) or Anthropic."""
+    minimax_key = os.getenv("MINIMAX_CODING_PLAN_API_KEY", "").strip()
+    if minimax_key:
+        # MiniMax docs: use ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY; SDK sends X-Api-Key
+        return anthropic.AsyncAnthropic(
+            api_key=minimax_key,
+            base_url=MINIMAX_BASE_URL,
+        ), MINIMAX_MODEL
+    return (
+        anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY", "")),
+        ANTHROPIC_MODEL,
+    )
+
+
+def _first_text_from_content(content) -> str:
+    """Get first text block from LLM response (MiniMax may return thinking + text)."""
+    for block in content:
+        if getattr(block, "type", None) == "text" and hasattr(block, "text"):
+            return block.text
+        if hasattr(block, "text"):
+            return block.text
+    return ""
+
 
 class ReflectionEngine:
     """Generates AI-powered trade post-mortems and weekly performance reports."""
 
     def __init__(self):
-        self._claude = anthropic.AsyncAnthropic(
-            api_key=os.getenv("ANTHROPIC_API_KEY", "")
-        )
+        self._client, self._model = _llm_client()
 
     # -------------------------------------------------------------------------
     # Single trade reflection
@@ -83,19 +121,19 @@ class ReflectionEngine:
                 hours=hours_held,
             )
 
-            response = await self._claude.messages.create(
-                model="claude-haiku-4-5",
+            response = await self._client.messages.create(
+                model=self._model,
                 max_tokens=500,
                 system=_REFLECT_SYSTEM,
                 messages=[{"role": "user", "content": prompt}],
             )
 
-            raw = response.content[0].text.strip()
+            raw = _first_text_from_content(response.content).strip()
             data = self._parse_json(raw)
 
         except Exception as exc:
             logger.error(
-                "ReflectionEngine: Claude API error for trade %s: %s", trade_id, exc
+                "ReflectionEngine: LLM API error for trade %s: %s", trade_id, exc
             )
             # Write a fallback reflection so we always have a record
             data = {
@@ -185,16 +223,16 @@ Recent trade reflections:
 Return JSON: {{"summary": "3-4 sentence overview", "key_learnings": "2-3 bullet points of actionable insights"}}"""
 
         try:
-            response = await self._claude.messages.create(
-                model="claude-haiku-4-5",
+            response = await self._client.messages.create(
+                model=self._model,
                 max_tokens=600,
                 system=_WEEKLY_SYSTEM,
                 messages=[{"role": "user", "content": weekly_prompt}],
             )
-            raw = response.content[0].text.strip()
+            raw = _first_text_from_content(response.content).strip()
             data = self._parse_json(raw)
         except Exception as exc:
-            logger.error("ReflectionEngine: weekly report Claude error: %s", exc)
+            logger.error("ReflectionEngine: weekly report LLM error: %s", exc)
             data = {
                 "summary": f"Week of {week_start}: {total_trades} trades, {win_rate:.1f}% win rate, ${net_pnl:.2f} net PnL.",
                 "key_learnings": "Manual review recommended.",
@@ -220,6 +258,13 @@ Return JSON: {{"summary": "3-4 sentence overview", "key_learnings": "2-3 bullet 
         except Exception as exc:
             logger.error("ReflectionEngine: DB error saving weekly report: %s", exc)
             await db_session.rollback()
+            return
+
+        # Generate parameter recommendations after weekly report
+        try:
+            await self.generate_recommendations(db_session, trigger="weekly_report")
+        except Exception as exc:
+            logger.error("ReflectionEngine: post-weekly recommendations error: %s", exc)
 
     # -------------------------------------------------------------------------
     # Recent learnings for strategy context injection
@@ -247,8 +292,185 @@ Return JSON: {{"summary": "3-4 sentence overview", "key_learnings": "2-3 bullet 
         return "\n".join(lines)
 
     # -------------------------------------------------------------------------
+    # Parameter recommendations
+    # -------------------------------------------------------------------------
+
+    async def generate_recommendations(self, db_session, trigger: str) -> None:
+        """
+        Ask the LLM to propose 0-3 parameter changes based on recent performance.
+        Validates against guardrails, skips duplicates, writes to recommendations table.
+        """
+        from api.models import Trade, Reflection, Recommendation, Setting
+
+        logger.info("ReflectionEngine: generating recommendations (trigger=%s)", trigger)
+
+        try:
+            # Gather last 20 closed trades
+            result = await db_session.execute(
+                select(Trade)
+                .where(Trade.status == "closed")
+                .order_by(Trade.resolved_at.desc())
+                .limit(20)
+            )
+            recent_trades = result.scalars().all()
+
+            if not recent_trades:
+                logger.info("ReflectionEngine: no closed trades — skipping recommendations")
+                return
+
+            trades_summary = []
+            for t in recent_trades:
+                trades_summary.append({
+                    "strategy": t.strategy,
+                    "side": t.side,
+                    "entry_price": float(t.entry_price),
+                    "exit_price": float(t.exit_price) if t.exit_price else None,
+                    "net_pnl": float(t.net_pnl) if t.net_pnl else 0,
+                    "resolved_at": t.resolved_at.isoformat() if t.resolved_at else None,
+                })
+
+            # Recent reflections
+            learnings = await self.get_recent_learnings(db_session, limit=10)
+
+            # Current param values from DB
+            current_params = {}
+            for key in TUNABLE_PARAMS:
+                result = await db_session.execute(
+                    select(Setting).where(Setting.key == key)
+                )
+                setting = result.scalar_one_or_none()
+                current_params[key] = setting.value if setting else str(TUNABLE_PARAMS[key]["default"])
+
+            # Last 5 denied recommendations with user's reasoning
+            result = await db_session.execute(
+                select(Recommendation)
+                .where(Recommendation.status == "denied")
+                .order_by(Recommendation.resolved_at.desc())
+                .limit(5)
+            )
+            denied = result.scalars().all()
+            denied_context = ""
+            if denied:
+                denied_lines = []
+                for d in denied:
+                    denied_lines.append(
+                        f"- {d.setting_key}: proposed {d.proposed_value} (denied: {d.denial_reason or 'no reason given'})"
+                    )
+                denied_context = (
+                    "\n\nPreviously denied recommendations (respect the user's reasoning):\n"
+                    + "\n".join(denied_lines)
+                )
+
+            # Build param descriptions for the LLM
+            param_info = []
+            for key, spec in TUNABLE_PARAMS.items():
+                param_info.append(
+                    f"- {key}: {spec['description']} "
+                    f"(current={current_params[key]}, min={spec['min']}, max={spec['max']})"
+                )
+
+            prompt = f"""Recent closed trades (newest first):
+{json.dumps(trades_summary, indent=2)}
+
+Recent reflections:
+{learnings}
+
+Tunable parameters:
+{chr(10).join(param_info)}
+{denied_context}
+
+Trigger: {trigger}
+
+Based on the evidence above, propose 0-3 specific parameter changes.
+Only propose changes with clear supporting evidence from the trade data.
+Do NOT propose changes the user has recently denied for similar reasons.
+
+Return JSON array: [{{"setting_key": "param_name", "proposed_value": "new_value", "reasoning": "why this change, citing specific trade data"}}]
+Return an empty array [] if no changes are warranted."""
+
+            response = await self._client.messages.create(
+                model=self._model,
+                max_tokens=800,
+                system=_RECOMMEND_SYSTEM,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = _first_text_from_content(response.content).strip()
+            recommendations = self._parse_json_array(raw)
+
+        except Exception as exc:
+            logger.error("ReflectionEngine: recommendation generation error: %s", exc)
+            return
+
+        # Validate and write each recommendation
+        written = 0
+        for rec in recommendations:
+            key = rec.get("setting_key", "")
+            proposed = rec.get("proposed_value", "")
+            reasoning = rec.get("reasoning", "")
+
+            if not key or not proposed or not reasoning:
+                continue
+
+            # Validate against guardrails
+            valid, err = validate_proposed_value(key, proposed)
+            if not valid:
+                logger.info("ReflectionEngine: skipping invalid recommendation %s=%s: %s", key, proposed, err)
+                continue
+
+            # Skip no-ops (proposed == current)
+            current = current_params.get(key, "")
+            if str(proposed).strip() == str(current).strip():
+                continue
+
+            # Skip if pending recommendation for same key already exists
+            result = await db_session.execute(
+                select(Recommendation).where(
+                    and_(
+                        Recommendation.setting_key == key,
+                        Recommendation.status == "pending",
+                    )
+                )
+            )
+            if result.scalar_one_or_none():
+                logger.info("ReflectionEngine: skipping %s — pending recommendation already exists", key)
+                continue
+
+            recommendation = Recommendation(
+                setting_key=key,
+                current_value=current,
+                proposed_value=str(proposed),
+                reasoning=reasoning,
+                trigger=trigger,
+            )
+            db_session.add(recommendation)
+            written += 1
+
+        if written:
+            try:
+                await db_session.commit()
+                logger.info("ReflectionEngine: wrote %d recommendation(s) (trigger=%s)", written, trigger)
+            except Exception as exc:
+                logger.error("ReflectionEngine: DB error saving recommendations: %s", exc)
+                await db_session.rollback()
+
+    # -------------------------------------------------------------------------
     # Helpers
     # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_json_array(raw: str) -> list[dict]:
+        """Parse a JSON array from LLM response, stripping markdown fences."""
+        if raw.startswith("```"):
+            parts = raw.split("```")
+            raw = parts[1] if len(parts) > 1 else raw
+            if raw.startswith("json"):
+                raw = raw[4:]
+        try:
+            result = json.loads(raw.strip())
+            return result if isinstance(result, list) else []
+        except json.JSONDecodeError as exc:
+            logger.warning("ReflectionEngine: JSON array parse error: %s — raw: %s", exc, raw[:200])
+            return []
 
     @staticmethod
     def _parse_json(raw: str) -> dict:

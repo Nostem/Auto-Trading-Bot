@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS trades (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     market_id VARCHAR(255) NOT NULL,
     market_title TEXT NOT NULL,
-    strategy VARCHAR(50) NOT NULL CHECK (strategy IN ('bond', 'market_making', 'news_arbitrage')),
+    strategy VARCHAR(50) NOT NULL CHECK (strategy IN ('bond', 'market_making', 'btc_15min')),
     side VARCHAR(10) NOT NULL CHECK (side IN ('yes', 'no')),
     size INTEGER NOT NULL,
     entry_price DECIMAL(6,4) NOT NULL,
@@ -62,15 +62,37 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS recommendations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    setting_key VARCHAR(100) NOT NULL,
+    current_value TEXT NOT NULL,
+    proposed_value TEXT NOT NULL,
+    reasoning TEXT NOT NULL,
+    trigger VARCHAR(50) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'denied')),
+    denial_reason TEXT,
+    resolved_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Default settings
 INSERT INTO settings (key, value) VALUES
     ('bot_enabled', 'true'),
     ('bond_strategy_enabled', 'true'),
     ('market_making_enabled', 'true'),
-    ('news_arbitrage_enabled', 'true'),
+    ('btc_strategy_enabled', 'true'),
     ('max_position_pct', '0.15'),
     ('daily_loss_limit_pct', '0.03'),
-    ('current_bankroll', '5000')
+    ('current_bankroll', '5000'),
+    ('sizing_mode', 'fixed_dollar'),
+    ('fixed_trade_amount', '5'),
+    ('bond_stop_loss_cents', '0.06'),
+    ('stop_loss_threshold', '0.50'),
+    ('btc_take_profit_pct', '0.30'),
+    ('mm_max_hold_hours', '4'),
+    ('bond_pre_expiry_sec', '300'),
+    ('mm_pre_expiry_sec', '600'),
+    ('btc_pre_expiry_sec', '60')
 ON CONFLICT (key) DO NOTHING;
 
 CREATE INDEX IF NOT EXISTS idx_trades_created_at ON trades(created_at DESC);
@@ -78,3 +100,5 @@ CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
 CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy);
 CREATE INDEX IF NOT EXISTS idx_reflections_trade_id ON reflections(trade_id);
 CREATE INDEX IF NOT EXISTS idx_reflections_created_at ON reflections(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_recommendations_status ON recommendations(status);
+CREATE INDEX IF NOT EXISTS idx_recommendations_created_at ON recommendations(created_at DESC);

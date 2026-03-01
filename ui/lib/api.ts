@@ -1,4 +1,4 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 const API_TOKEN = process.env.NEXT_PUBLIC_API_TOKEN || "";
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
@@ -92,14 +92,29 @@ export interface WeeklyReflection {
   created_at: string;
 }
 
+export interface Recommendation {
+  id: string;
+  setting_key: string;
+  current_value: string;
+  proposed_value: string;
+  reasoning: string;
+  trigger: string;
+  status: string;
+  denial_reason: string | null;
+  created_at: string;
+}
+
 export interface Settings {
   bot_enabled: string;
   bond_strategy_enabled: string;
   market_making_enabled: string;
-  news_arbitrage_enabled: string;
+  btc_strategy_enabled: string;
   max_position_pct: string;
   daily_loss_limit_pct: string;
   current_bankroll: string;
+  sizing_mode: string;
+  fixed_trade_amount: string;
+  [key: string]: string;  // allow extra settings from DB
 }
 
 // ---- API calls ----
@@ -126,6 +141,27 @@ export const api = {
   getSettings: () => apiFetch<Settings>("/controls/settings"),
   pauseBot: () => apiFetch("/controls/pause", { method: "POST" }),
   resumeBot: () => apiFetch("/controls/resume", { method: "POST" }),
-  updateSettings: (body: { max_position_pct: number; daily_loss_limit_pct: number }) =>
-    apiFetch("/controls/settings", { method: "POST", body: JSON.stringify(body) }),
+  toggleStrategy: (key: string, enabled: boolean) =>
+    apiFetch("/controls/strategy", {
+      method: "POST",
+      body: JSON.stringify({ key, enabled }),
+    }),
+  updateSettings: (body: {
+    max_position_pct: number;
+    daily_loss_limit_pct: number;
+    sizing_mode?: string;
+    fixed_trade_amount?: number;
+  }) => apiFetch("/controls/settings", { method: "POST", body: JSON.stringify(body) }),
+  getRecommendations: (status = "pending") =>
+    apiFetch<Recommendation[]>(`/controls/recommendations?status=${status}`),
+  approveRecommendation: (id: string) =>
+    apiFetch<{ status: string; setting_key: string; new_value: string }>(
+      `/controls/recommendations/${id}/approve`,
+      { method: "POST" }
+    ),
+  denyRecommendation: (id: string, reason: string) =>
+    apiFetch<{ status: string; setting_key: string }>(
+      `/controls/recommendations/${id}/deny`,
+      { method: "POST", body: JSON.stringify({ reason }) }
+    ),
 };

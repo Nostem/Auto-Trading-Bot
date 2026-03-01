@@ -123,6 +123,31 @@ class WeeklyReflection(Base):
     )
 
 
+class Recommendation(Base):
+    __tablename__ = "recommendations"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    setting_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    current_value: Mapped[str] = mapped_column(Text, nullable=False)
+    proposed_value: Mapped[str] = mapped_column(Text, nullable=False)
+    reasoning: Mapped[str] = mapped_column(Text, nullable=False)
+    trigger: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending"
+    )
+    denial_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
 class Setting(Base):
     __tablename__ = "settings"
 
