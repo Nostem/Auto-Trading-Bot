@@ -65,8 +65,15 @@ TUNABLE_PARAMS: dict[str, dict] = {
         "description": "Daily loss limit as fraction of bankroll (e.g. 0.03 = 3%)",
         "default": 0.03,
         "min": 0.01,
-        "max": 0.10,
+        "max": 0.25,
         "type": "float",
+    },
+    "weather_pre_expiry_sec": {
+        "description": "Seconds before market close to exit weather positions",
+        "default": 300,
+        "min": 60,
+        "max": 1800,
+        "type": "int",
     },
 }
 

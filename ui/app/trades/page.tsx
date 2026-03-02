@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { api, Trade } from "@/lib/api";
 import TradeCard from "@/components/TradeCard";
 
-const STRATEGY_FILTERS = ["all", "bond", "market_making", "news_arbitrage"];
+const STRATEGY_FILTERS = ["all", "bond", "market_making", "btc_15min"];
 const STATUS_FILTERS = ["all", "open", "closed"];
 
 function Skeleton() {

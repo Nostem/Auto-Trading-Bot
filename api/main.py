@@ -32,7 +32,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -43,8 +43,10 @@ app.add_middleware(
 
 @app.middleware("http")
 async def bearer_auth(request: Request, call_next):
-    # Skip auth for health check
+    # Skip auth for health check and CORS preflight
     if request.url.path in ("/health", "/docs", "/openapi.json", "/redoc"):
+        return await call_next(request)
+    if request.method == "OPTIONS":
         return await call_next(request)
 
     if not API_BEARER_TOKEN:
@@ -73,10 +75,16 @@ async def bearer_auth(request: Request, call_next):
 
 @app.on_event("startup")
 async def startup():
-    """Create tables if they don't exist yet (mirrors schema.sql)."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info("Kalshi Bot API started")
+    """Create tables if they don't exist yet (mirrors schema.sql). Does not fail startup if DB is unreachable."""
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Kalshi Bot API started — database connected")
+    except Exception as exc:
+        logger.warning(
+            "Kalshi Bot API started but database connection failed (fix DATABASE_URL and restart): %s",
+            exc,
+        )
 
 # ---------------------------------------------------------------------------
 # Routes
@@ -93,12 +101,15 @@ app.include_router(controls.router)
 async def health():
     from api.database import async_session_factory
     from sqlalchemy import text
+    db_ok = False
+    bot_enabled = False
     try:
         async with async_session_factory() as session:
             result = await session.execute(text("SELECT value FROM settings WHERE key='bot_enabled'"))
             row = result.scalar_one_or_none()
             bot_enabled = row == "true" if row else False
-    except Exception:
-        bot_enabled = False
+            db_ok = True
+    except Exception as exc:
+        logger.debug("Health check DB error: %s", exc)
 
-    return {"status": "ok", "bot_enabled": bot_enabled}
+    return {"status": "ok", "database": db_ok, "bot_enabled": bot_enabled}

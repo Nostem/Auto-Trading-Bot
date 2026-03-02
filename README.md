@@ -14,7 +14,7 @@ An autonomous trading bot for [Kalshi](https://kalshi.com), a CFTC-regulated US 
 - Node.js 18+
 - [Supabase](https://supabase.com) account (free tier)
 - [Kalshi](https://kalshi.com) account with API access
-- [Anthropic API key](https://console.anthropic.com) (for AI reflection engine)
+- [MiniMax Coding Plan](https://platform.minimaxi.com/subscribe/coding-plan) or [Anthropic](https://console.anthropic.com) API key (for AI reflection engine and news classification)
 - [GNews API key](https://gnews.io) (for news monitoring, free tier)
 - [Railway](https://railway.app) account (for bot + API hosting)
 - [Vercel](https://vercel.com) account (for UI hosting)

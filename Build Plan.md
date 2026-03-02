@@ -112,7 +112,7 @@ kalshi-bot/
 # Kalshi API
 KALSHI_API_KEY=your_kalshi_api_key
 KALSHI_API_SECRET=your_kalshi_api_secret
-KALSHI_BASE_URL=https://trading-api.kalshi.com/trade-api/v2
+KALSHI_BASE_URL=https://api.elections.kalshi.com/trade-api/v2
 
 # Database
 DATABASE_URL=postgresql+asyncpg://user:password@host:5432/kalshi_bot

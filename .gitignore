@@ -5,6 +5,7 @@ node_modules/
 .next/
 *.pyc
 venv/
+.venv/
 .DS_Store
 *.egg-info/
 dist/

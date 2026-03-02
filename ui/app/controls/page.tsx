@@ -218,6 +218,15 @@ export default function ControlsPage() {
             setSettings({ ...settings, btc_strategy_enabled: v ? "true" : "false" });
           }}
         />
+        <Toggle
+          label="Weather"
+          enabled={settings?.weather_strategy_enabled === "true"}
+          onChange={async (v) => {
+            if (!settings) return;
+            await api.toggleStrategy("weather_strategy_enabled", v);
+            setSettings({ ...settings, weather_strategy_enabled: v ? "true" : "false" });
+          }}
+        />
         <div className="pb-1" />
       </div>
 
@@ -471,7 +480,7 @@ export default function ControlsPage() {
           <input
             type="range"
             min={1}
-            max={10}
+            max={25}
             value={dailyLoss}
             onChange={(e) => setDailyLoss(Number(e.target.value))}
             className="w-full"
@@ -479,7 +488,7 @@ export default function ControlsPage() {
           />
           <div className="flex justify-between text-xs mt-1" style={{ color: "#444" }}>
             <span>1%</span>
-            <span>10%</span>
+            <span>25%</span>
           </div>
         </div>
 

@@ -74,7 +74,7 @@ The scanner runs every 60 seconds. It must be idempotent — running it twice sh
 |ORM                   |SQLAlchemy 2.0 async         |Type-safe, async-native                  |
 |Database              |PostgreSQL (Supabase)        |Reliable, good free tier, easy to inspect|
 |Retry logic           |tenacity                     |Clean decorator-based retries            |
-|AI                    |Claude API (claude-haiku-4-5)|Fast, cheap, good at structured JSON     |
+|AI                    |Anthropic claude-opus-4-6                |Reflections + recommendations; set ANTHROPIC_API_KEY             |
 |UI framework          |Next.js 14 App Router        |PWA support, easy Vercel deploy          |
 |UI styling            |Tailwind CSS (dark mode only)|Fast, mobile-first                       |
 |Bot hosting           |Railway                      |Supports long-running processes, simple  |
@@ -144,12 +144,13 @@ The entry point. Starts APScheduler, wires all components together, handles grac
 - **Key check:** If one side is > 60% filled without the other, cancel both and reset
 - **Key parameter:** Only enter markets with spread > 0.04 (after Kalshi’s fees)
 
-### News Arbitrage
+### BTC 15-Minute Strategy
 
-- **What:** Enter markets within 5 minutes of a relevant news headline, before price adjusts
-- **Risk:** Medium. News can be misinterpreted. Exit window is short.
-- **Key check:** If market price has already moved > 0.05 since headline, skip (too late)
-- **Time-sensitive:** This strategy bypasses the 60-second scan cycle — runs immediately on news events
+- **What:** Trade Kalshi Bitcoin price prediction markets using a lognormal probability model against the current BTC spot price
+- **Risk:** Medium. Model assumes constant volatility (4% daily). Sudden BTC moves will cause losses.
+- **Price feed:** CoinGecko free API (no key needed). Caches last price on failure.
+- **Key parameters:** Only enter markets within 4 hours of resolution with ≥ 4% edge. Min volume $5k.
+- **Key file:** `bot/strategies/btc_strategy.py`
 
 -----
 
@@ -172,7 +173,7 @@ See `.env.example` for all variables. Critical ones:
 
 - `KALSHI_API_KEY` / `KALSHI_API_SECRET` — Kalshi credentials
 - `DATABASE_URL` — PostgreSQL connection string (asyncpg format)
-- `ANTHROPIC_API_KEY` — Claude API for reflections
+- `MINIMAX_CODING_PLAN_API_KEY` or `ANTHROPIC_API_KEY` — LLM for reflections and news classification (use one)
 - `API_BEARER_TOKEN` — Secret token for PWA ↔ API auth
 - `BOT_ENABLED` — Master on/off switch (also controlled via DB settings table)
 - `INITIAL_BANKROLL` — Starting capital amount
@@ -198,17 +199,23 @@ async def get_setting(session, key: str, default: str = None) -> str:
     return setting.value if setting else default
 ```
 
-### Calling Claude API
+### Calling the LLM (MiniMax or Anthropic)
+
+Reflection engine and news listener use the Anthropic-compatible API. If `MINIMAX_CODING_PLAN_API_KEY` is set, MiniMax is used; else Anthropic.
 
 ```python
 import anthropic
-client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+# MiniMax (Plus High Speed): base_url="https://api.minimaxi.com/anthropic", model="minimax-m2.5-highspeed"
+# Anthropic: default base_url, model="claude-haiku-4-5"
+client = anthropic.AsyncAnthropic(api_key=os.getenv("MINIMAX_CODING_PLAN_API_KEY") or os.getenv("ANTHROPIC_API_KEY"))
 response = await client.messages.create(
-    model="claude-haiku-4-5",
+    model="minimax-m2.5-highspeed",  # or "claude-haiku-4-5"
     max_tokens=500,
     messages=[{"role": "user", "content": prompt}]
 )
-result = json.loads(response.content[0].text)
+# Prefer first text block (MiniMax may return thinking + text)
+text = next((b.text for b in response.content if hasattr(b, "text")), response.content[0].text)
+result = json.loads(text)
 ```
 
 ### Kalshi Price Format
@@ -292,6 +299,7 @@ Track progress here as sessions are completed:
 - [x] Session 12 — Bot main entry point
 - [x] Session 13 — Next.js PWA UI
 - [x] Session 14 — Deployment config
+- [x] Post-14 — Removed news arbitrage, added BTC 15-min strategy, improved MiniMax LLM startup validation
 
 -----
 

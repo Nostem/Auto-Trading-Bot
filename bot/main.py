@@ -30,6 +30,8 @@ logger = logging.getLogger("bot.main")
 # Component imports (after env is loaded)
 # ---------------------------------------------------------------------------
 
+from sqlalchemy import select
+
 from api.database import async_session_factory, engine
 from api.models import Base
 from bot.core.executor import Executor
@@ -74,7 +76,7 @@ async def _test_llm_connection() -> None:
     elif anthropic_key:
         provider = "Anthropic"
         client = anth.AsyncAnthropic(api_key=anthropic_key)
-        model = "claude-sonnet-4-6"
+        model = "claude-opus-4-6"
         logger.info("LLM: using Anthropic (model=%s)", model)
     else:
         logger.warning(
@@ -181,15 +183,33 @@ async def monitor_positions():
 
 
 async def _reflect_on_trade(trade_dict: dict):
-    """Async callback invoked after a trade closes — runs reflection non-blocking."""
-    async with async_session_factory() as session:
-        try:
-            await _reflection_engine.reflect_on_trade(trade_dict, session)
-        except Exception as exc:
-            logger.error("_reflect_on_trade: error: %s", exc)
+    """Async callback invoked after a trade closes.
 
-    # Check loss triggers if this trade was a loss
-    if float(trade_dict.get("net_pnl", 0)) < 0:
+    Only generates a reflection after 3 consecutive losses to reduce API calls.
+    Always checks loss triggers for parameter recommendations.
+    """
+    is_loss = float(trade_dict.get("net_pnl", 0)) < 0
+
+    if is_loss:
+        # Check if we now have 3 consecutive losses — if so, reflect on all 3
+        async with async_session_factory() as session:
+            from api.models import Trade
+            result = await session.execute(
+                select(Trade)
+                .where(Trade.status == "closed")
+                .order_by(Trade.resolved_at.desc())
+                .limit(3)
+            )
+            last_3 = result.scalars().all()
+            if len(last_3) == 3 and all(float(t.net_pnl or 0) < 0 for t in last_3):
+                # Reflect on the most recent trade as representative of the streak
+                try:
+                    await _reflection_engine.reflect_on_trade(trade_dict, session)
+                    logger.info("_reflect_on_trade: 3 consecutive losses — reflection generated")
+                except Exception as exc:
+                    logger.error("_reflect_on_trade: error: %s", exc)
+
+        # Check loss triggers for parameter recommendations
         async with async_session_factory() as session:
             try:
                 await _check_loss_triggers(session)
@@ -355,6 +375,7 @@ async def startup():
             ("Bond", "bond_strategy_enabled"),
             ("Market Making", "market_making_enabled"),
             ("BTC 15-Min", "btc_strategy_enabled"),
+            ("Weather", "weather_strategy_enabled"),
         ]
         if settings.get(key, "true") == "true"
     ]

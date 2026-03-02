@@ -25,6 +25,7 @@ _PRE_EXPIRY_KEYS = {
     "bond": "bond_pre_expiry_sec",
     "market_making": "mm_pre_expiry_sec",
     "btc_15min": "btc_pre_expiry_sec",
+    "weather": "weather_pre_expiry_sec",
 }
 
 # Paper trading mode: log orders without actually placing them on Kalshi.
@@ -344,7 +345,7 @@ class Executor:
         Cancel open orders for the market, record final PnL in trades table,
         and remove from positions table.
         """
-        from api.models import Trade
+        from api.models import Trade, Setting
 
         logger.info(
             "Executor: closing position %s — %s",
@@ -393,6 +394,20 @@ class Executor:
                 "Executor: trade closed — %s %s, net_pnl=$%.2f",
                 position.market_id, position.side, net_pnl,
             )
+
+            # Update bankroll
+            result = await db_session.execute(
+                select(Setting).where(Setting.key == "current_bankroll")
+            )
+            bankroll_setting = result.scalar_one_or_none()
+            if bankroll_setting:
+                old_bankroll = float(bankroll_setting.value)
+                new_bankroll = old_bankroll + net_pnl
+                bankroll_setting.value = f"{new_bankroll:.2f}"
+                logger.info(
+                    "Executor: bankroll updated $%.2f → $%.2f (pnl=$%.2f)",
+                    old_bankroll, new_bankroll, net_pnl,
+                )
 
             # Fire reflection asynchronously — don't block trading
             if reflection_callback and trade:

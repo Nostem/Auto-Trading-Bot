@@ -10,7 +10,9 @@ from bot.core.kalshi_client import KalshiClient
 from bot.core.risk_manager import RiskManager
 from bot.intelligence.signal_scorer import SignalScorer, TradeSignal
 from bot.strategies.bond_strategy import BondStrategy
+from bot.strategies.btc_strategy import BTCStrategy
 from bot.strategies.market_making import MarketMakingStrategy
+from bot.strategies.weather_strategy import WeatherStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,8 @@ class Scanner:
         self.scorer = SignalScorer()
         self.bond_strategy = BondStrategy()
         self.mm_strategy = MarketMakingStrategy()
+        self.btc_strategy = BTCStrategy()
+        self.weather_strategy = WeatherStrategy()
 
     async def run_scan(
         self,
@@ -102,6 +106,24 @@ class Scanner:
             except Exception as exc:
                 logger.error("Scanner: market making strategy error: %s", exc)
 
+        btc_enabled = await self._get_setting(db_session, "btc_strategy_enabled", "true")
+        if btc_enabled.lower() == "true":
+            try:
+                btc_signals = await self.btc_strategy.scan(client, open_position_tickers, db_session)
+                all_signals.extend(btc_signals)
+                logger.info("Scanner: BTC strategy returned %d signal(s)", len(btc_signals))
+            except Exception as exc:
+                logger.error("Scanner: BTC strategy error: %s", exc)
+
+        weather_enabled = await self._get_setting(db_session, "weather_strategy_enabled", "false")
+        if weather_enabled.lower() == "true":
+            try:
+                weather_signals = await self.weather_strategy.scan(client, open_position_tickers, db_session)
+                all_signals.extend(weather_signals)
+                logger.info("Scanner: weather strategy returned %d signal(s)", len(weather_signals))
+            except Exception as exc:
+                logger.error("Scanner: weather strategy error: %s", exc)
+
         if not all_signals:
             logger.info("Scanner: no raw signals this cycle")
             return []
@@ -122,6 +144,7 @@ class Scanner:
                 proposed_size=signal.proposed_size,
                 bankroll=bankroll,
                 open_positions=open_positions,
+                db_session=db_session,
             )
             if decision.approved:
                 signal.proposed_size = decision.recommended_size

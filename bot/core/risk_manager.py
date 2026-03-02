@@ -51,6 +51,7 @@ class RiskManager:
         proposed_size: int,
         bankroll: float,
         open_positions: list,
+        db_session=None,
     ) -> TradeDecision:
         """
         Validate a proposed trade against all risk rules.
@@ -77,14 +78,26 @@ class RiskManager:
             logger.warning(reason)
             return TradeDecision(approved=False, recommended_size=0, reason=reason)
 
-        # --- Rule 3: Max single position size ---
+        # --- Sizing mode: fixed_dollar or percentage ---
+        sizing_mode = await self._get_setting(db_session, "sizing_mode", os.getenv("SIZING_MODE", "percentage"))
+        entry_price = float(market.get("yes_ask", 0.5)) if side == "yes" else float(market.get("no_ask", 0.5))
+        if entry_price <= 0:
+            entry_price = 0.5
+
+        if sizing_mode == "fixed_dollar":
+            fixed_amount = float(await self._get_setting(
+                db_session, "fixed_trade_amount", os.getenv("FIXED_TRADE_AMOUNT", "5")
+            ))
+            proposed_size = max(1, int(fixed_amount / entry_price))
+            logger.info(
+                "Fixed-dollar sizing: $%.2f / $%.4f = %d contracts for %s",
+                fixed_amount, entry_price, proposed_size, ticker,
+            )
+
+        # --- Rule 3: Max single position size (always enforced) ---
         max_allowed_size = self.get_max_position_size(bankroll)
-        trade_cost = proposed_size * float(market.get("yes_ask", 0.5))
+        trade_cost = proposed_size * entry_price
         if trade_cost > max_allowed_size:
-            # Clamp to max allowed rather than reject outright
-            entry_price = float(market.get("yes_ask", 0.5)) if side == "yes" else float(market.get("no_ask", 0.5))
-            if entry_price <= 0:
-                entry_price = 0.5
             proposed_size = max(1, int(max_allowed_size / entry_price))
             logger.info(
                 "Clamped %s size to %d contracts (max position $%.2f)",
@@ -178,20 +191,23 @@ class RiskManager:
                 Trade.status == "closed",
             )
         )
-        today_pnl = result.scalar() or 0.0
+        today_pnl = float(result.scalar() or 0)
 
-        loss_limit = bankroll * self.daily_loss_limit_pct
+        # Read daily_loss_limit_pct from DB (UI-controlled), fall back to env/default
+        db_limit = await self._get_setting(db_session, "daily_loss_limit_pct", "")
+        daily_loss_pct = float(db_limit) if db_limit else self.daily_loss_limit_pct
+        loss_limit = bankroll * daily_loss_pct
         if today_pnl <= -loss_limit:
             logger.critical(
-                "Daily loss limit hit: today_pnl=%.2f, limit=-%.2f (%.1%% of bankroll=%.2f)",
-                today_pnl, loss_limit, self.daily_loss_limit_pct, bankroll,
+                "Daily loss limit hit: today_pnl=$%.2f, limit=-$%.2f (%.0f%% of bankroll=$%.2f)",
+                today_pnl, loss_limit, daily_loss_pct * 100, bankroll,
             )
             return True
 
-        remaining = loss_limit + today_pnl
+        remaining = loss_limit + today_pnl  # today_pnl is negative, so this shrinks
         if remaining < loss_limit * 0.25:
             logger.warning(
-                "Approaching daily loss limit: today_pnl=%.2f, only $%.2f remaining",
+                "Approaching daily loss limit: today_pnl=$%.2f, only $%.2f remaining",
                 today_pnl, remaining,
             )
 
@@ -201,9 +217,26 @@ class RiskManager:
     # Helpers
     # -------------------------------------------------------------------------
 
-    def get_max_position_size(self, bankroll: float) -> float:
+    @staticmethod
+    async def _get_setting(db_session, key: str, default: str) -> str:
+        """Read a setting from DB if session provided, else return default."""
+        if db_session is None:
+            return default
+        try:
+            from sqlalchemy import text
+            result = await db_session.execute(
+                text("SELECT value FROM settings WHERE key = :k"),
+                {"k": key},
+            )
+            row = result.scalar_one_or_none()
+            return row if row is not None else default
+        except Exception:
+            return default
+
+    def get_max_position_size(self, bankroll: float, max_pct_override: float | None = None) -> float:
         """Return max dollar amount for a single position."""
-        return bankroll * min(self.max_position_pct, 0.20)
+        pct = max_pct_override if max_pct_override is not None else self.max_position_pct
+        return bankroll * min(pct, 0.25)
 
     def _calculate_total_exposure(self, open_positions: list, bankroll: float) -> float:
         """Return current total exposure as a fraction of bankroll."""

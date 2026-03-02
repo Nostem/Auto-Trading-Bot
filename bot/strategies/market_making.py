@@ -19,8 +19,8 @@ class MarketMakingStrategy:
     """Places paired limit orders on both sides of liquid markets."""
 
     def __init__(self):
-        self.min_spread = float(os.getenv("MM_MIN_SPREAD", "0.04"))
-        self.min_volume = float(os.getenv("MM_MIN_VOLUME", "10000"))
+        self.min_spread = float(os.getenv("MM_MIN_SPREAD", "0.02"))
+        self.min_volume = float(os.getenv("MM_MIN_VOLUME", "5000"))
         self.min_hours_to_resolution = 4.0
 
     async def scan(
@@ -41,7 +41,7 @@ class MarketMakingStrategy:
         mm_tickers = {o.get("ticker", "") for o in open_orders if o.get("ticker")}
 
         try:
-            markets = await client.get_markets(status="open", limit=200)
+            markets = await client.get_active_markets(status="open", limit=500)
         except Exception as exc:
             logger.error("MarketMakingStrategy: failed to fetch markets: %s", exc)
             return []
@@ -221,24 +221,44 @@ class MarketMakingStrategy:
 
     @staticmethod
     def _best_bid(orderbook: dict, side: str) -> float | None:
-        bids = orderbook.get(f"{side}_bids") or orderbook.get("bids", {}).get(side, [])
-        if not bids:
+        """
+        Best bid = highest price someone will pay for this side.
+        Kalshi orderbook: {"yes": [[price, qty], ...], "no": [[price, qty], ...]}.
+        YES bid = max price in the `yes` list.
+        NO bid  = max price in the `no` list.
+        """
+        levels = orderbook.get(side, [])
+        if not levels:
             return None
         prices = []
-        for level in bids:
-            price = level.get("price") if isinstance(level, dict) else level
-            if price is not None:
-                prices.append(float(price) / 100.0)
-        return max(prices) if prices else None
+        for level in levels:
+            if isinstance(level, (list, tuple)) and len(level) >= 1:
+                prices.append(int(level[0]))
+            elif isinstance(level, dict):
+                p = level.get("price")
+                if p is not None:
+                    prices.append(int(p))
+        return max(prices) / 100.0 if prices else None
 
     @staticmethod
     def _best_ask(orderbook: dict, side: str) -> float | None:
-        asks = orderbook.get(f"{side}_asks") or orderbook.get("asks", {}).get(side, [])
-        if not asks:
+        """
+        Best ask = cheapest price to buy this side.
+        In binary markets: YES ask = (100 - best NO bid) / 100.
+        """
+        opposite = "no" if side == "yes" else "yes"
+        levels = orderbook.get(opposite, [])
+        if not levels:
             return None
         prices = []
-        for level in asks:
-            price = level.get("price") if isinstance(level, dict) else level
-            if price is not None:
-                prices.append(float(price) / 100.0)
-        return min(prices) if prices else None
+        for level in levels:
+            if isinstance(level, (list, tuple)) and len(level) >= 1:
+                prices.append(int(level[0]))
+            elif isinstance(level, dict):
+                p = level.get("price")
+                if p is not None:
+                    prices.append(int(p))
+        if not prices:
+            return None
+        best_opposite_bid = max(prices)
+        return (100 - best_opposite_bid) / 100.0

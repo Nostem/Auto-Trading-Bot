@@ -1,6 +1,7 @@
 """
-News Listener — polls RSS feeds and classifies headlines using Claude
-for trading relevance before dispatching to the news arbitrage strategy.
+News Listener — polls RSS feeds and classifies headlines using an LLM
+(Claude or MiniMax Coding Plan) for trading relevance before dispatching
+to the news arbitrage strategy.
 """
 import asyncio
 import json
@@ -14,8 +15,36 @@ import feedparser
 import anthropic
 from dotenv import load_dotenv
 
+try:
+    from anthropic import AuthenticationError as AnthropicAuthError
+except ImportError:
+    AnthropicAuthError = None
+
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+MINIMAX_BASE_URL = "https://api.minimaxi.com/anthropic"
+MINIMAX_MODEL = "minimax-m2.5-highspeed"
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
+
+
+def _llm_client():
+    """Return AsyncAnthropic client for MiniMax (Coding Plan) or Anthropic."""
+    minimax_key = os.getenv("MINIMAX_CODING_PLAN_API_KEY", "").strip()
+    if minimax_key:
+        # MiniMax docs: use ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY; SDK sends X-Api-Key
+        return anthropic.AsyncAnthropic(api_key=minimax_key, base_url=MINIMAX_BASE_URL), MINIMAX_MODEL
+    return anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY", "")), ANTHROPIC_MODEL
+
+
+def _first_text_from_content(content) -> str:
+    """Get first text block from LLM response (MiniMax may return thinking + text)."""
+    for block in content:
+        if getattr(block, "type", None) == "text" and hasattr(block, "text"):
+            return block.text
+        if hasattr(block, "text"):
+            return block.text
+    return ""
 
 RSS_FEEDS = [
     "https://feeds.reuters.com/reuters/topNews",
@@ -56,16 +85,15 @@ class ClassifiedHeadline:
 
 class NewsListener:
     """
-    Monitors RSS feeds, deduplicates headlines, and uses Claude to classify
+    Monitors RSS feeds, deduplicates headlines, and uses an LLM to classify
     each new headline for prediction-market trading relevance.
     """
 
     def __init__(self):
         self._seen_ids: set[str] = set()
         self._running = False
-        self._claude = anthropic.AsyncAnthropic(
-            api_key=os.getenv("ANTHROPIC_API_KEY", "")
-        )
+        self._client, self._model = _llm_client()
+        self._llm_auth_failed = False  # skip classification after 401 to avoid log spam
 
     async def start_polling(
         self,
@@ -135,8 +163,8 @@ class NewsListener:
 
     async def classify_headline(self, headline: dict) -> ClassifiedHeadline:
         """
-        Use Claude (claude-haiku-4-5) to classify a headline for trading
-        relevance. Returns a ClassifiedHeadline dataclass.
+        Use the configured LLM to classify a headline for trading relevance.
+        Returns a ClassifiedHeadline dataclass.
         """
         title = headline.get("title", "")
         summary = headline.get("summary", "")[:500]  # truncate long summaries
@@ -152,16 +180,29 @@ class NewsListener:
         except Exception:
             published = datetime.now(timezone.utc)
 
+        if self._llm_auth_failed:
+            return ClassifiedHeadline(
+                headline=title,
+                summary=summary,
+                source=source,
+                published=published,
+                relevant=False,
+                affected_categories=[],
+                direction="neutral",
+                confidence=0.0,
+                reasoning="News classification skipped (LLM API key invalid).",
+            )
+
         prompt = _CLASSIFY_USER_TEMPLATE.format(title=title, summary=summary)
 
         try:
-            response = await self._claude.messages.create(
-                model="claude-haiku-4-5",
+            response = await self._client.messages.create(
+                model=self._model,
                 max_tokens=300,
                 messages=[{"role": "user", "content": prompt}],
                 system=_CLASSIFY_SYSTEM,
             )
-            raw = response.content[0].text.strip()
+            raw = _first_text_from_content(response.content).strip()
             # Strip markdown code fences if present
             if raw.startswith("```"):
                 raw = raw.split("```")[1]
@@ -169,10 +210,21 @@ class NewsListener:
                     raw = raw[4:]
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
-            logger.warning("NewsListener: failed to parse Claude JSON for '%s': %s", title, exc)
+            logger.warning("NewsListener: failed to parse LLM JSON for '%s': %s", title, exc)
             data = {}
         except Exception as exc:
-            logger.error("NewsListener: Claude API error classifying '%s': %s", title, exc)
+            if AnthropicAuthError and isinstance(exc, AnthropicAuthError) or (
+                getattr(exc, "status_code", None) == 401
+            ):
+                self._llm_auth_failed = True
+                logger.warning(
+                    "NewsListener: LLM API returned 401 (invalid API key). "
+                    "News classification disabled until restart. "
+                    "Fix MINIMAX_CODING_PLAN_API_KEY: use a Coding Plan key from "
+                    "https://platform.minimaxi.com (not pay-as-you-go key)."
+                )
+            else:
+                logger.error("NewsListener: LLM API error classifying '%s': %s", title, exc)
             data = {}
 
         return ClassifiedHeadline(

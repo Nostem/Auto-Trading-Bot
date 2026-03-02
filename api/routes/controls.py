@@ -16,7 +16,7 @@ router = APIRouter()
 
 class RiskSettingsUpdate(BaseModel):
     max_position_pct: float = Field(ge=0.05, le=0.25)
-    daily_loss_limit_pct: float = Field(ge=0.01, le=0.10)
+    daily_loss_limit_pct: float = Field(ge=0.01, le=0.25)
     sizing_mode: str | None = Field(default=None, pattern=r"^(fixed_dollar|percentage)$")
     fixed_trade_amount: float | None = Field(default=None, ge=1, le=100)
 
@@ -45,7 +45,7 @@ async def resume_bot(db: AsyncSession = Depends(get_db)):
 
 
 class StrategyToggle(BaseModel):
-    key: str = Field(pattern=r"^(bond_strategy_enabled|market_making_enabled|btc_strategy_enabled)$")
+    key: str = Field(pattern=r"^(bond_strategy_enabled|market_making_enabled|btc_strategy_enabled|weather_strategy_enabled)$")
     enabled: bool
 
 

@@ -20,8 +20,11 @@ class BondStrategy:
     """Scans for near-certain market outcomes to capture before resolution."""
 
     def __init__(self):
-        self.min_price = float(os.getenv("BOND_MIN_PRICE", "0.94"))
-        self.max_hours_to_resolution = 72.0
+        self.min_price = float(os.getenv("BOND_MIN_PRICE", "0.88"))
+        # Kalshi markets often resolve months/years out; allow wider window
+        self.max_hours_to_resolution = float(
+            os.getenv("BOND_MAX_HOURS_TO_RESOLUTION", "8760")  # 1 year default
+        )
         self.min_volume = float(os.getenv("BOND_MIN_VOLUME", "5000"))
 
     async def scan(
@@ -39,7 +42,7 @@ class BondStrategy:
         signals: list[TradeSignal] = []
 
         try:
-            markets = await client.get_markets(status="open", limit=200)
+            markets = await client.get_active_markets(status="open", limit=500)
         except Exception as exc:
             logger.error("BondStrategy: failed to fetch markets: %s", exc)
             return []
@@ -170,14 +173,27 @@ class BondStrategy:
 
     @staticmethod
     def _best_ask(orderbook: dict, side: str) -> float | None:
-        """Extract the best (lowest) ask price for a side from the orderbook."""
-        asks = orderbook.get(f"{side}_asks") or orderbook.get("asks", {}).get(side, [])
-        if not asks:
+        """
+        Extract the best (lowest) ask price for a side from the orderbook.
+
+        Kalshi's orderbook returns {"yes": [[price, qty], ...], "no": [[price, qty], ...]}.
+        The lists are resting BID orders. In a binary market:
+          YES ask = (100 - best NO bid) / 100
+          NO ask  = (100 - best YES bid) / 100
+        """
+        opposite = "no" if side == "yes" else "yes"
+        levels = orderbook.get(opposite, [])
+        if not levels:
             return None
-        # Kalshi prices are integers 0–100; convert to float
         prices = []
-        for level in asks:
-            price = level.get("price") if isinstance(level, dict) else level
-            if price is not None:
-                prices.append(float(price) / 100.0)
-        return min(prices) if prices else None
+        for level in levels:
+            if isinstance(level, (list, tuple)) and len(level) >= 1:
+                prices.append(int(level[0]))
+            elif isinstance(level, dict):
+                p = level.get("price")
+                if p is not None:
+                    prices.append(int(p))
+        if not prices:
+            return None
+        best_opposite_bid = max(prices)
+        return (100 - best_opposite_bid) / 100.0

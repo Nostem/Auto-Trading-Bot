@@ -17,7 +17,7 @@ class TradeSignal:
     """Universal trade opportunity representation. Every strategy produces these."""
     ticker: str
     market_title: str
-    strategy: str                    # 'bond' | 'market_making' | 'news_arbitrage'
+    strategy: str                    # 'bond' | 'market_making' | 'btc_15min'
     side: str                        # 'yes' | 'no'
     proposed_size: int
     entry_price: float               # 0.0 – 1.0

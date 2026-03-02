@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # MiniMax Coding Plan is Anthropic API–compatible; use base_url + model when key is set
 MINIMAX_BASE_URL = "https://api.minimaxi.com/anthropic"
 MINIMAX_MODEL = "minimax-m2.5-highspeed"
-ANTHROPIC_MODEL = "claude-sonnet-4-6"
+ANTHROPIC_MODEL = "claude-opus-4-6"
 
 _REFLECT_SYSTEM = (
     "You are a trading journal AI for a prediction market bot. "

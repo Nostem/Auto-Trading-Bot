@@ -1,17 +1,18 @@
 """
 Kalshi API client — the single point of contact for all Kalshi REST API calls.
-Handles HMAC-SHA256 authentication, rate limiting, retries, and logging.
+Handles RSA-PSS authentication, rate limiting, retries, and logging.
 """
 import asyncio
 import base64
-import hashlib
-import hmac
 import logging
 import os
 import time
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 from dotenv import load_dotenv
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
@@ -44,8 +45,14 @@ class KalshiClient:
     def __init__(self):
         self.api_key = os.getenv("KALSHI_API_KEY", "")
         self.api_secret = os.getenv("KALSHI_API_SECRET", "")
-        self.base_url = os.getenv("KALSHI_BASE_URL", "https://trading-api.kalshi.com/trade-api/v2")
+        self.base_url = os.getenv(
+            "KALSHI_BASE_URL",
+            "https://api.elections.kalshi.com/trade-api/v2",
+        )
         self._client: Optional[httpx.AsyncClient] = None
+        self._private_key = None  # cached RSA key
+        # Kalshi signs the full path including the API version prefix, e.g. "/trade-api/v2"
+        self._api_path_prefix = urlparse(self.base_url).path.rstrip("/")
 
     async def __aenter__(self) -> "KalshiClient":
         self._client = httpx.AsyncClient(
@@ -63,13 +70,40 @@ class KalshiClient:
     # Authentication
     # -------------------------------------------------------------------------
 
+    def _load_private_key(self):
+        """
+        Load (and cache) the RSA private key from KALSHI_API_SECRET.
+        Kalshi provides the key as a base64-encoded DER blob (PKCS#1 or PKCS#8).
+        """
+        if self._private_key is not None:
+            return self._private_key
+        if not self.api_secret:
+            raise ValueError("KALSHI_API_SECRET is not set")
+        der_bytes = base64.b64decode(self.api_secret)
+        try:
+            self._private_key = serialization.load_der_private_key(der_bytes, password=None)
+        except Exception:
+            pem = (
+                b"-----BEGIN RSA PRIVATE KEY-----\n"
+                + base64.encodebytes(der_bytes)
+                + b"-----END RSA PRIVATE KEY-----\n"
+            )
+            self._private_key = serialization.load_pem_private_key(pem, password=None)
+        return self._private_key
+
     def _sign_request(self, method: str, path: str) -> dict:
-        """Build HMAC-SHA256 signed headers for Kalshi API authentication."""
+        """Build RSA-PSS signed headers for Kalshi API authentication."""
         timestamp_ms = str(int(time.time() * 1000))
-        # Signature = HMAC-SHA256(timestamp + METHOD + path)
-        message = timestamp_ms + method.upper() + path
-        secret_bytes = base64.b64decode(self.api_secret) if self.api_secret else b""
-        signature = hmac.new(secret_bytes, message.encode("utf-8"), hashlib.sha256).digest()
+        message = (timestamp_ms + method.upper() + path).encode("utf-8")
+        private_key = self._load_private_key()
+        signature = private_key.sign(
+            message,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.DIGEST_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
         sig_b64 = base64.b64encode(signature).decode("utf-8")
         return {
             "KALSHI-ACCESS-KEY": self.api_key,
@@ -97,8 +131,11 @@ class KalshiClient:
         if not self._client:
             raise RuntimeError("KalshiClient must be used as an async context manager")
 
-        headers = self._sign_request(method, path)
-        logger.debug("Kalshi %s %s", method, path)
+        # Kalshi RSA auth signs the full path (API prefix + endpoint), no query string.
+        # e.g. "/trade-api/v2/portfolio/orders"
+        signed_path = self._api_path_prefix + path
+        headers = self._sign_request(method, signed_path)
+        logger.debug("Kalshi %s %s (signed: %s)", method, path, signed_path)
 
         response = await self._client.request(method, path, headers=headers, **kwargs)
 
@@ -135,6 +172,7 @@ class KalshiClient:
         self,
         status: str = "open",
         category: Optional[str] = None,
+        series_ticker: Optional[str] = None,
         limit: int = 100,
     ) -> list[dict]:
         """Fetch markets with optional filtering. Paginates automatically."""
@@ -145,12 +183,53 @@ class KalshiClient:
             params: dict = {"status": status, "limit": min(limit, 200)}
             if category:
                 params["category"] = category
+            if series_ticker:
+                params["series_ticker"] = series_ticker
             if cursor:
                 params["cursor"] = cursor
 
             data = await self._request("GET", "/markets", params=params)
             batch = data.get("markets", [])
             markets.extend(batch)
+
+            cursor = data.get("cursor")
+            if not cursor or len(markets) >= limit:
+                break
+
+        return markets[:limit]
+
+    async def get_active_markets(
+        self,
+        status: str = "open",
+        limit: int = 500,
+    ) -> list[dict]:
+        """
+        Fetch markets via the /events endpoint with nested markets.
+
+        The default /markets endpoint returns mostly zero-volume sports parlays.
+        Going through /events gives us the real, liquid prediction markets.
+        """
+        markets = []
+        cursor = None
+
+        while True:
+            params: dict = {
+                "status": status,
+                "limit": min(limit, 100),
+                "with_nested_markets": "true",
+            }
+            if cursor:
+                params["cursor"] = cursor
+
+            data = await self._request("GET", "/events", params=params)
+            events = data.get("events", [])
+            if not events:
+                break
+
+            for event in events:
+                for market in event.get("markets", []):
+                    market["_event_category"] = event.get("category", "")
+                    markets.append(market)
 
             cursor = data.get("cursor")
             if not cursor or len(markets) >= limit:

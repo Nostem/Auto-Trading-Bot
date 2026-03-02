@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS trades (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     market_id VARCHAR(255) NOT NULL,
     market_title TEXT NOT NULL,
-    strategy VARCHAR(50) NOT NULL CHECK (strategy IN ('bond', 'market_making', 'btc_15min')),
+    strategy VARCHAR(50) NOT NULL CHECK (strategy IN ('bond', 'market_making', 'btc_15min', 'weather')),
     side VARCHAR(10) NOT NULL CHECK (side IN ('yes', 'no')),
     size INTEGER NOT NULL,
     entry_price DECIMAL(6,4) NOT NULL,
@@ -92,7 +92,9 @@ INSERT INTO settings (key, value) VALUES
     ('mm_max_hold_hours', '4'),
     ('bond_pre_expiry_sec', '300'),
     ('mm_pre_expiry_sec', '600'),
-    ('btc_pre_expiry_sec', '60')
+    ('btc_pre_expiry_sec', '60'),
+    ('weather_strategy_enabled', 'false'),
+    ('weather_pre_expiry_sec', '300')
 ON CONFLICT (key) DO NOTHING;
 
 CREATE INDEX IF NOT EXISTS idx_trades_created_at ON trades(created_at DESC);
