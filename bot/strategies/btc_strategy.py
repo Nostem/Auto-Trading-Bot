@@ -1,15 +1,17 @@
 """
-BTC 15-Minute Strategy — scans Kalshi Bitcoin price prediction markets and
-generates trade signals by comparing market-implied probability against a
-fair-value estimate derived from the current BTC price and a volatility model.
+BTC 15-Minute Strategy — RSI momentum-based approach for Kalshi Bitcoin
+price prediction markets.
 
-Targets markets with short time horizons (15 min – 4 hours) where a lognormal
-model of BTC price movement can produce a meaningful edge.
+Uses 15-minute BTC/USDT candles from Binance to compute a 14-period RSI.
+  - RSI < 30 (oversold) → buy YES on bullish contracts (expect rebound)
+  - RSI > 70 (overbought) → buy NO on bullish contracts (expect pullback)
+
+Targets open BTC markets (KXBTC series) with suitable time horizons.
 """
 import logging
-import math
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -21,56 +23,58 @@ from bot.intelligence.signal_scorer import TradeSignal
 logger = logging.getLogger(__name__)
 
 # --- Config defaults (overridable via env) ---
-_BTC_VOLATILITY_DAILY = 0.03   # 3% assumed daily vol; ~0.9% per hour (conservative)
-_MIN_EDGE = 0.025              # 2.5% minimum edge for NO trades
-_YES_MIN_EDGE = 0.05           # 5% minimum edge for YES trades (historically weak)
+_RSI_PERIOD = 14
+_RSI_OVERBOUGHT = 70
+_RSI_OVERSOLD = 30
 _MAX_HOURS = 8.0               # trade markets closing within 8 hours
 _MIN_HOURS = 0.1               # skip markets closing in < 6 minutes
-_MIN_VOLUME = 5000             # $5k minimum market volume
-_CONFIDENCE = 0.60             # moderate — model is simple
-_YES_MIN_ENTRY = 0.70          # YES trades must be ≥70¢ (high-probability events only)
-_NO_MIN_ENTRY = 0.25           # NO trades must be ≥25¢ (fee-viable)
+_CONFIDENCE = 0.65             # moderate — RSI is a well-known indicator
+_YES_MIN_ENTRY = 0.35          # YES (oversold rebound) — lower floor since RSI gives direction
+_NO_MIN_ENTRY = 0.25           # NO (overbought fade) — fee-viable
+_MIN_VOLUME = 0                # BTC markets on Kalshi have low volume; skip only dead ones
 
-_COINGECKO_URL = (
-    "https://api.coingecko.com/api/v3/simple/price"
-    "?ids=bitcoin&vs_currencies=usd"
-)
+# Candle data endpoints (no API keys needed)
+_BINANCE_US_KLINES_URL = "https://api.binance.us/api/v3/klines"
+_KRAKEN_OHLC_URL = "https://api.kraken.com/0/public/OHLC"
+
+# Additional series tickers to scan beyond KXBTC
+_BTC_SERIES = ["KXBTC", "KXBTCMAX", "KXBTCMIN", "KXBTCMAXY"]
 
 
 # ---------------------------------------------------------------------------
-# Probability model
+# RSI calculation (manual — no talib dependency)
 # ---------------------------------------------------------------------------
 
-def _normal_cdf(x: float) -> float:
-    """Standard normal CDF via math.erf."""
-    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
-
-
-def probability_above_strike(
-    current_price: float,
-    strike: float,
-    hours_to_resolution: float,
-    daily_vol: float = _BTC_VOLATILITY_DAILY,
-) -> float:
+def calculate_rsi(closes: list[float], period: int = _RSI_PERIOD) -> Optional[float]:
     """
-    Estimate P(BTC > strike at resolution) using a lognormal model.
+    Calculate the Relative Strength Index from a list of close prices.
 
-    Assumes zero drift (conservative; drift is negligible over short windows).
-    Returns probability clipped to [0.05, 0.95] to avoid extreme certainty.
+    Uses the smoothed (Wilder's) moving average method.
+    Returns None if not enough data points.
     """
-    if hours_to_resolution <= 0 or current_price <= 0 or strike <= 0:
-        return 0.5
+    if len(closes) < period + 1:
+        return None
 
-    t_days = hours_to_resolution / 24.0
-    sigma_t = daily_vol * math.sqrt(t_days)
+    deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
 
-    if sigma_t < 1e-9:
-        return 1.0 if current_price > strike else 0.0
+    # Initial average gain/loss over the first `period` deltas
+    gains = [d if d > 0 else 0.0 for d in deltas[:period]]
+    losses = [-d if d < 0 else 0.0 for d in deltas[:period]]
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
 
-    # d2 = ln(S/K) / (sigma * sqrt(T)) — no drift term
-    d2 = math.log(current_price / strike) / sigma_t
-    prob = _normal_cdf(d2)
-    return max(0.05, min(0.95, prob))
+    # Smoothed (Wilder's) for remaining deltas
+    for d in deltas[period:]:
+        gain = d if d > 0 else 0.0
+        loss = -d if d < 0 else 0.0
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
+
+    if avg_loss == 0:
+        return 100.0
+
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
 
 
 # ---------------------------------------------------------------------------
@@ -85,19 +89,17 @@ def parse_strike_from_title(title: str) -> Optional[float]:
       "Will Bitcoin be above $95,000 on March 2?"
       "BTC above $100,000?"
       "Bitcoin > $90000 at 3pm ET"
-      "KXBTC-25MAR01-B90000"  ← ticker format, handled separately
+      "KXBTC-25MAR01-B90000"  (ticker format)
     """
-    # Look for $ amounts in the title
     matches = re.findall(r'\$([0-9,]+(?:\.[0-9]+)?)', title)
     for match in matches:
         try:
             price = float(match.replace(",", ""))
-            if 1_000 <= price <= 2_000_000:  # sane range for BTC
+            if 1_000 <= price <= 2_000_000:
                 return price
         except ValueError:
             continue
 
-    # Try to parse from ticker-style suffixes like "B90000" or "-90000"
     ticker_match = re.search(r'[B-](\d{4,7})\b', title)
     if ticker_match:
         try:
@@ -116,38 +118,86 @@ def parse_strike_from_title(title: str) -> Optional[float]:
 
 class BTCStrategy:
     """
-    Scans Kalshi crypto markets for Bitcoin price prediction opportunities.
+    RSI momentum strategy for Kalshi BTC prediction markets.
 
-    For each BTC market with a parseable strike price and suitable time horizon,
-    computes P(above strike) using a lognormal model and generates a signal
-    if the model edge exceeds the configured threshold.
+    Fetches 15m BTC candles from Binance, computes RSI, and generates
+    directional signals on open Kalshi BTC markets.
     """
 
     def __init__(self):
-        self.min_edge = float(os.getenv("BTC_MIN_EDGE", str(_MIN_EDGE)))
         self.max_hours = float(os.getenv("BTC_MAX_HOURS_TO_RESOLUTION", str(_MAX_HOURS)))
-        self.daily_vol = float(os.getenv("BTC_DAILY_VOLATILITY", str(_BTC_VOLATILITY_DAILY)))
+        self.rsi_overbought = float(os.getenv("BTC_RSI_OVERBOUGHT", str(_RSI_OVERBOUGHT)))
+        self.rsi_oversold = float(os.getenv("BTC_RSI_OVERSOLD", str(_RSI_OVERSOLD)))
+        self._cached_candles: Optional[tuple[float, list[float]]] = None  # (timestamp, closes)
         self._cached_price: Optional[float] = None
 
-    async def get_btc_price(self) -> Optional[float]:
+    async def _fetch_candles(self) -> Optional[list[float]]:
         """
-        Fetch current BTC/USD price from CoinGecko (no API key required).
-        Falls back to the last cached price on failure.
+        Fetch last 100 15-minute BTC/USDT candles.
+        Uses Binance.US as primary, Kraken as fallback.
+        Returns list of close prices. Caches for 60 seconds.
         """
+        # Return cache if fresh (< 60s old)
+        if self._cached_candles:
+            ts, closes = self._cached_candles
+            if time.time() - ts < 60:
+                return closes
+
+        closes = await self._fetch_binance_us()
+        if not closes:
+            closes = await self._fetch_kraken()
+
+        if closes:
+            self._cached_candles = (time.time(), closes)
+            self._cached_price = closes[-1]
+            logger.debug(
+                "BTCStrategy: fetched %d candles, latest close=$%s",
+                len(closes), f"{closes[-1]:,.2f}",
+            )
+            return closes
+
+        logger.warning("BTCStrategy: all candle sources failed")
+        if self._cached_candles:
+            logger.info("BTCStrategy: using cached candles")
+            return self._cached_candles[1]
+        return None
+
+    async def _fetch_binance_us(self) -> Optional[list[float]]:
+        """Fetch 15m candles from Binance.US (US-accessible)."""
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(_COINGECKO_URL)
+            async with httpx.AsyncClient(timeout=10.0) as http:
+                response = await http.get(
+                    _BINANCE_US_KLINES_URL,
+                    params={"symbol": "BTCUSDT", "interval": "15m", "limit": 100},
+                )
+                response.raise_for_status()
+                klines = response.json()
+            closes = [float(k[4]) for k in klines]
+            return closes if closes else None
+        except Exception as exc:
+            logger.debug("BTCStrategy: Binance.US fetch failed: %s", exc)
+            return None
+
+    async def _fetch_kraken(self) -> Optional[list[float]]:
+        """Fetch 15m candles from Kraken (fallback)."""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as http:
+                response = await http.get(
+                    _KRAKEN_OHLC_URL,
+                    params={"pair": "XBTUSD", "interval": 15},
+                )
                 response.raise_for_status()
                 data = response.json()
-                price = float(data["bitcoin"]["usd"])
-                self._cached_price = price
-                logger.debug("BTCStrategy: BTC price = $%,.2f", price)
-                return price
+            if data.get("error"):
+                return None
+            # Kraken returns {result: {XXBTZUSD: [[time,o,h,l,close,...], ...], last: ...}}
+            key = [k for k in data["result"] if k != "last"][0]
+            candles = data["result"][key]
+            closes = [float(c[4]) for c in candles[-100:]]  # last 100
+            return closes if closes else None
         except Exception as exc:
-            logger.warning("BTCStrategy: CoinGecko fetch failed: %s", exc)
-            if self._cached_price:
-                logger.info("BTCStrategy: using cached price $%,.2f", self._cached_price)
-            return self._cached_price
+            logger.debug("BTCStrategy: Kraken fetch failed: %s", exc)
+            return None
 
     async def scan(
         self,
@@ -156,32 +206,65 @@ class BTCStrategy:
         db_session=None,
     ) -> list[TradeSignal]:
         """
-        Main scan loop — fetch BTC price, find matching markets, score signals.
+        Main scan loop — fetch candles, compute RSI, find matching markets,
+        generate signals.
         """
-        btc_price = await self.get_btc_price()
-        if btc_price is None:
-            logger.warning("BTCStrategy: skipping scan — no BTC price available")
+        closes = await self._fetch_candles()
+        if closes is None:
+            logger.warning("BTCStrategy: skipping scan — no candle data available")
             return []
 
-        # Fetch BTC markets directly using the KXBTC series ticker.
-        try:
-            btc_markets = await client.get_markets(
-                status="open", series_ticker="KXBTC", limit=200,
+        rsi = calculate_rsi(closes)
+        if rsi is None:
+            logger.warning("BTCStrategy: skipping scan — not enough data for RSI")
+            return []
+
+        btc_price = closes[-1]
+
+        # Determine signal direction from RSI
+        if rsi < self.rsi_oversold:
+            rsi_side = "yes"  # oversold → expect rebound → buy YES on bullish contracts
+        elif rsi > self.rsi_overbought:
+            rsi_side = "no"   # overbought → expect pullback → buy NO on bullish contracts
+        else:
+            logger.info(
+                "BTCStrategy: RSI=%.1f (neutral zone) — no signal (BTC=$%s)",
+                rsi, f"{btc_price:,.0f}",
             )
-        except Exception as exc:
-            logger.error("BTCStrategy: failed to fetch BTC markets: %s", exc)
             return []
 
-        if not btc_markets:
-            logger.info("BTCStrategy: no open BTC markets found on Kalshi")
+        # Fetch BTC markets from multiple series tickers
+        all_btc_markets: list[dict] = []
+        for series in _BTC_SERIES:
+            try:
+                markets = await client.get_markets(
+                    status="open", series_ticker=series, limit=200,
+                )
+                if markets:
+                    all_btc_markets.extend(markets)
+            except Exception as exc:
+                logger.warning("BTCStrategy: failed to fetch %s markets: %s", series, exc)
 
-        # Build cooldown set: markets we traded in the last 30 minutes
+        if not all_btc_markets:
+            logger.info("BTCStrategy: no open BTC markets found on Kalshi")
+            return []
+
+        # Deduplicate by ticker
+        seen = set()
+        btc_markets = []
+        for m in all_btc_markets:
+            t = m.get("ticker", "")
+            if t not in seen:
+                seen.add(t)
+                btc_markets.append(m)
+
+        # Build cooldown set: markets we traded in the last 15 minutes
         recently_traded: set[str] = set()
         if db_session:
             try:
                 from api.models import Trade
                 from sqlalchemy import select
-                cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+                cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
                 result = await db_session.execute(
                     select(Trade.market_id).where(
                         Trade.strategy == "btc_15min",
@@ -202,15 +285,15 @@ class BTCStrategy:
             if ticker in recently_traded:
                 continue
             try:
-                signal = self._evaluate_market(market, btc_price)
+                signal = self._evaluate_market(market, btc_price, rsi, rsi_side)
                 if signal:
                     signals.append(signal)
             except Exception as exc:
                 logger.warning("BTCStrategy: error on %s: %s", ticker, exc)
 
         logger.info(
-            "BTCStrategy: scanned %d BTC markets → %d signal(s) (BTC=$%s)",
-            len(btc_markets), len(signals), f"{btc_price:,.0f}",
+            "BTCStrategy: RSI=%.1f (%s) BTC=$%s — scanned %d markets → %d signal(s)",
+            rsi, rsi_side.upper(), f"{btc_price:,.0f}", len(btc_markets), len(signals),
         )
         return signals
 
@@ -218,6 +301,8 @@ class BTCStrategy:
         self,
         market: dict,
         btc_price: float,
+        rsi: float,
+        rsi_side: str,
     ) -> Optional[TradeSignal]:
         """Evaluate a single market and return a TradeSignal or None."""
         from bot.strategies.bond_strategy import BondStrategy
@@ -235,10 +320,9 @@ class BTCStrategy:
         if not (_MIN_HOURS <= hours_to_close <= self.max_hours):
             return None
 
-        # Volume filter — BTC markets on Kalshi tend to have low volume;
-        # skip only if completely dead (0 volume)
+        # Volume filter — skip completely dead markets
         volume = float(market.get("volume", 0) or 0)
-        if volume < 1:
+        if volume < _MIN_VOLUME:
             return None
 
         # Extract strike
@@ -251,37 +335,34 @@ class BTCStrategy:
         if yes_ask_raw is None:
             return None
         market_yes_price = float(yes_ask_raw) / 100.0
-
-        # Fair probability from model
-        our_prob_yes = probability_above_strike(
-            btc_price, strike, hours_to_close, self.daily_vol
-        )
-        our_prob_no = 1.0 - our_prob_yes
-
-        # Implied market probability for NO side
         market_no_price = 1.0 - market_yes_price
 
-        # Determine best direction — YES requires higher edge (historically weak)
-        yes_edge = our_prob_yes - market_yes_price
-        no_edge = our_prob_no - market_no_price
-
-        yes_min_edge = float(os.getenv("BTC_YES_MIN_EDGE", str(_YES_MIN_EDGE)))
-        if no_edge >= self.min_edge and (no_edge >= yes_edge or yes_edge < yes_min_edge):
-            side, entry_price, our_probability, edge = "no", market_no_price, our_prob_no, no_edge
-        elif yes_edge >= yes_min_edge:
-            side, entry_price, our_probability, edge = "yes", market_yes_price, our_prob_yes, yes_edge
-        else:
-            return None
+        # Determine entry price based on RSI direction
+        side = rsi_side
+        entry_price = market_yes_price if side == "yes" else market_no_price
 
         if entry_price >= 1.0 or entry_price <= 0.0:
             return None
 
-        # Side-specific minimum entry prices:
-        # YES trades need high-probability events (≥70¢) — cheap YES contracts lose to fees+model error
-        # NO trades need ≥25¢ to be fee-viable ($0.14 round-trip fees per contract)
+        # Side-specific minimum entry prices
         min_entry = _YES_MIN_ENTRY if side == "yes" else _NO_MIN_ENTRY
         if entry_price < min_entry:
             return None
+
+        # RSI strength: how far into overbought/oversold territory
+        if side == "yes":
+            rsi_strength = (self.rsi_oversold - rsi) / self.rsi_oversold  # 0..1
+        else:
+            rsi_strength = (rsi - self.rsi_overbought) / (100 - self.rsi_overbought)  # 0..1
+        rsi_strength = max(0.0, min(1.0, rsi_strength))
+
+        # Edge estimate based on RSI strength and how favorable the entry price is
+        # Stronger RSI signal → more confidence in directional move
+        base_edge = 0.02 + (rsi_strength * 0.06)  # 2%–8% edge range
+        our_probability = entry_price + base_edge if entry_price < 0.5 else entry_price + base_edge * 0.5
+
+        our_probability = max(0.05, min(0.95, our_probability))
+        edge = our_probability - entry_price
 
         expected_return_pct = (1.0 - entry_price) / entry_price
         annualized_return = expected_return_pct * (8760.0 / max(hours_to_close, 0.25))
@@ -300,33 +381,8 @@ class BTCStrategy:
             annualized_return=annualized_return,
             confidence=_CONFIDENCE,
             reasoning=(
-                f"BTC=${btc_price:,.0f} vs strike=${strike:,.0f} "
-                f"({hours_to_close:.2f}h to close) — "
-                f"model_prob={our_probability:.2f} market={market_yes_price:.2f} "
-                f"edge={edge:.3f} side={side}"
+                f"RSI={rsi:.1f} ({side.upper()}) BTC=${btc_price:,.0f} "
+                f"strike=${strike:,.0f} ({hours_to_close:.1f}h to close) — "
+                f"entry={entry_price:.2f} edge={edge:.3f} rsi_strength={rsi_strength:.2f}"
             ),
         )
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _is_btc_market(market: dict) -> bool:
-    """Return True if this market is a Bitcoin price prediction market."""
-    ticker = market.get("ticker", "").upper()
-    title = market.get("title", "").lower()
-    subtitle = market.get("subtitle", "").lower()
-    category = market.get("category", "").lower()
-    return (
-        "BTC" in ticker
-        or "BITCOIN" in ticker
-        or "KXBTC" in ticker
-        or "bitcoin" in title
-        or "bitcoin" in subtitle
-        or "bitcoin" in category
-        or ("btc" in title and "above" in title)
-        or ("btc" in title and "below" in title)
-        or ("btc" in title and "price" in title)
-        or ("btc" in subtitle)
-    )
