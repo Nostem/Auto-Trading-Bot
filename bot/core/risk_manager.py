@@ -231,13 +231,25 @@ class RiskManager:
                 )
 
         active_run_id = await self._get_setting(db_session, "active_run_id", "legacy")
-        result = await db_session.execute(
-            select(func.sum(Trade.net_pnl)).where(
-                Trade.resolved_at >= window_start,
+
+        # If the operator manually resumed intra-day, only count losses from
+        # trades opened after resume (fresh session). This prevents legacy
+        # positions opened earlier from instantly re-triggering auto-pause
+        # when they eventually resolve.
+        if window_start > today_start:
+            pnl_query = select(func.sum(Trade.net_pnl)).where(
                 Trade.status == "closed",
                 Trade.run_id == active_run_id,
+                Trade.created_at >= window_start,
             )
-        )
+        else:
+            pnl_query = select(func.sum(Trade.net_pnl)).where(
+                Trade.status == "closed",
+                Trade.run_id == active_run_id,
+                Trade.resolved_at >= window_start,
+            )
+
+        result = await db_session.execute(pnl_query)
         today_pnl = float(result.scalar() or 0)
 
         # Read daily_loss_limit_pct from DB (UI-controlled), fall back to env/default
