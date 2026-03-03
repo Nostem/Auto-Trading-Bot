@@ -1,7 +1,22 @@
 #!/bin/bash
 set -e
 
-echo "[entrypoint] Starting Kalshi Bot services…"
+MODE="${SERVICE_MODE:-all}"
+
+echo "[entrypoint] Starting Kalshi Bot services (mode=${MODE})…"
+
+if [ "$MODE" = "api" ]; then
+  exec uvicorn api.main:app --host 0.0.0.0 --port "${PORT:-8000}"
+fi
+
+if [ "$MODE" = "worker" ]; then
+  exec python -m bot.main
+fi
+
+if [ "$MODE" != "all" ]; then
+  echo "[entrypoint] Invalid SERVICE_MODE=${MODE}. Use api, worker, or all."
+  exit 2
+fi
 
 # Start FastAPI server
 uvicorn api.main:app --host 0.0.0.0 --port "${PORT:-8000}" &
