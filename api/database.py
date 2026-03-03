@@ -1,9 +1,11 @@
 """
 Async SQLAlchemy database setup for the FastAPI backend.
 """
+
 import os
 from typing import AsyncGenerator
 
+import asyncpg
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
@@ -21,6 +23,7 @@ engine = create_async_engine(
     max_overflow=10,
     pool_pre_ping=True,
     echo=False,
+    connect_args={"timeout": 30},
 )
 
 async_session_factory = async_sessionmaker(
