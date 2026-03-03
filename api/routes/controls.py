@@ -1,6 +1,7 @@
 """Bot control endpoints — pause/resume, settings management, and recommendations."""
 
 import uuid
+import os
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -13,6 +14,10 @@ from api.models import Recommendation, Setting
 from bot.intelligence.param_guardrails import validate_proposed_value
 
 router = APIRouter()
+
+
+def _is_truthy(value: object) -> bool:
+    return str(value).strip().lower() in {"true", "1", "yes", "on"}
 
 
 class RiskSettingsUpdate(BaseModel):
@@ -84,6 +89,29 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Setting))
     settings = result.scalars().all()
     return {s.key: s.value for s in settings}
+
+
+@router.get("/controls/state")
+async def get_control_state(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Setting))
+    settings = {s.key: s.value for s in result.scalars().all()}
+
+    bot_enabled_raw = settings.get("bot_enabled")
+    bot_enabled = _is_truthy(bot_enabled_raw)
+
+    return {
+        "bot_enabled": bot_enabled,
+        "bot_enabled_raw": bot_enabled_raw,
+        "bot_enabled_env": _is_truthy(os.getenv("BOT_ENABLED", "true")),
+        "bot_resumed_at": settings.get("bot_resumed_at"),
+        "active_run_id": settings.get("active_run_id"),
+        "active_strategy_version": settings.get("active_strategy_version"),
+        "current_bankroll": settings.get("current_bankroll"),
+        "daily_loss_limit_pct": settings.get("daily_loss_limit_pct"),
+        "min_expected_edge_buffer": settings.get("min_expected_edge_buffer"),
+        "llm_enabled_env": _is_truthy(os.getenv("ENABLE_LLM", "false")),
+        "server_time_utc": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 # ---------------------------------------------------------------------------
