@@ -19,6 +19,7 @@ ENV PATH=/root/.local/bin:$PATH
 COPY bot/ ./bot/
 COPY api/ ./api/
 COPY db/ ./db/
+COPY scripts/ ./scripts/
 COPY .env.example ./.env.example
 
 # Copy entrypoint
