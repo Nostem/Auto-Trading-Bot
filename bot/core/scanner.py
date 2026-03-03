@@ -7,6 +7,11 @@ import logging
 
 from sqlalchemy import select
 
+from api.bot_state import (
+    STATE_PAUSED_RISK,
+    STATE_RUNNING,
+    transition_bot_state,
+)
 from bot.core.kalshi_client import KalshiClient
 from bot.core.risk_manager import RiskManager
 from bot.intelligence.signal_scorer import SignalScorer, TradeSignal
@@ -40,24 +45,51 @@ class Scanner:
     ) -> list[TradeSignal]:
         """
         Full scan cycle:
-        1. Check bot_enabled and daily loss limit
+        1. Check desired state and daily loss limit
         2. Run enabled strategies
         3. Aggregate, deduplicate, risk-check, and rank signals
         4. Return top MAX_SIGNALS_PER_CYCLE approved signals
         """
-        from api.models import Setting, Position
+        from api.models import BotState, Position
 
-        # --- Step 1: Check global kill switch ---
-        bot_enabled = await self._get_setting(db_session, "bot_enabled", "true")
-        if bot_enabled.lower() != "true":
-            logger.info("Scanner: bot is paused — skipping scan cycle")
+        # --- Step 1: Check bot desired state ---
+        state_result = await db_session.execute(
+            select(BotState).where(BotState.id == 1)
+        )
+        state = state_result.scalar_one_or_none()
+        if state and state.desired_state != STATE_RUNNING:
+            logger.info(
+                "Scanner: desired_state=%s effective_state=%s — skipping",
+                state.desired_state,
+                state.effective_state,
+            )
             return []
 
         # --- Step 2: Check daily loss limit ---
         loss_limit_hit = await self.risk_manager.check_daily_loss_limit(db_session)
         if loss_limit_hit:
             logger.warning("Scanner: daily loss limit hit — skipping scan cycle")
+            await transition_bot_state(
+                db_session,
+                effective_state=STATE_PAUSED_RISK,
+                reason="daily_loss_limit",
+                detail="Session loss exceeded daily loss limit",
+                source="worker.scanner",
+                actor_type="worker",
+            )
+            await db_session.commit()
             return []
+
+        if state and state.effective_state != STATE_RUNNING:
+            await transition_bot_state(
+                db_session,
+                effective_state=STATE_RUNNING,
+                reason=None,
+                detail="Risk guard cleared",
+                source="worker.scanner",
+                actor_type="worker",
+            )
+            await db_session.commit()
 
         # --- Step 3: Gather open positions for risk checks ---
         result = await db_session.execute(select(Position))

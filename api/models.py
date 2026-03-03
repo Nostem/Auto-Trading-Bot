@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    JSON,
     CheckConstraint,
     Date,
     DateTime,
@@ -41,6 +42,7 @@ class Trade(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
     entry_reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
     run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     strategy_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -166,3 +168,46 @@ class Setting(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+class BotState(Base):
+    __tablename__ = "bot_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    desired_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    effective_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    pause_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pause_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active_run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_transition_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_by: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="system"
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class BotStateEvent(Base):
+    __tablename__ = "bot_state_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    actor_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    from_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    to_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

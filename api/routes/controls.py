@@ -9,15 +9,17 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.bot_state import (
+    STATE_PAUSED_MANUAL,
+    STATE_RUNNING,
+    is_truthy,
+    transition_bot_state,
+)
 from api.database import get_db
-from api.models import Recommendation, Setting
+from api.models import BotState, BotStateEvent, Recommendation, Setting
 from bot.intelligence.param_guardrails import validate_proposed_value
 
 router = APIRouter()
-
-
-def _is_truthy(value: object) -> bool:
-    return str(value).strip().lower() in {"true", "1", "yes", "on"}
 
 
 class RiskSettingsUpdate(BaseModel):
@@ -42,16 +44,43 @@ async def _upsert_setting(db: AsyncSession, key: str, value: str) -> None:
 
 @router.post("/controls/pause")
 async def pause_bot(db: AsyncSession = Depends(get_db)):
-    await _upsert_setting(db, "bot_enabled", "false")
-    return {"status": "paused", "bot_enabled": False}
+    state = await transition_bot_state(
+        db,
+        desired_state=STATE_PAUSED_MANUAL,
+        effective_state=STATE_PAUSED_MANUAL,
+        reason="manual_pause",
+        detail="Paused via controls API",
+        source="api.controls.pause",
+        actor_type="user",
+    )
+    await db.commit()
+    return {
+        "status": "paused",
+        "desired_state": state.desired_state,
+        "effective_state": state.effective_state,
+        "session_id": state.session_id,
+    }
 
 
 @router.post("/controls/resume")
 async def resume_bot(db: AsyncSession = Depends(get_db)):
-    resumed_at = datetime.now(timezone.utc).isoformat()
-    await _upsert_setting(db, "bot_enabled", "true")
-    await _upsert_setting(db, "bot_resumed_at", resumed_at)
-    return {"status": "active", "bot_enabled": True}
+    state = await transition_bot_state(
+        db,
+        desired_state=STATE_RUNNING,
+        effective_state=STATE_RUNNING,
+        reason=None,
+        detail="Resumed via controls API",
+        source="api.controls.resume",
+        actor_type="user",
+        new_session=True,
+    )
+    await db.commit()
+    return {
+        "status": "active",
+        "desired_state": state.desired_state,
+        "effective_state": state.effective_state,
+        "session_id": state.session_id,
+    }
 
 
 class StrategyToggle(BaseModel):
@@ -96,22 +125,78 @@ async def get_control_state(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Setting))
     settings = {s.key: s.value for s in result.scalars().all()}
 
+    state_result = await db.execute(select(BotState).where(BotState.id == 1))
+    state = state_result.scalar_one_or_none()
+
     bot_enabled_raw = settings.get("bot_enabled")
-    bot_enabled = _is_truthy(bot_enabled_raw)
+    bot_enabled = is_truthy(bot_enabled_raw)
+
+    desired_state = (
+        state.desired_state
+        if state
+        else (STATE_RUNNING if bot_enabled else STATE_PAUSED_MANUAL)
+    )
+    effective_state = (
+        state.effective_state
+        if state
+        else (STATE_RUNNING if bot_enabled else STATE_PAUSED_MANUAL)
+    )
 
     return {
-        "bot_enabled": bot_enabled,
+        "desired_state": desired_state,
+        "effective_state": effective_state,
+        "pause_reason": state.pause_reason if state else None,
+        "pause_detail": state.pause_detail if state else None,
+        "session_id": state.session_id if state else None,
+        "active_run_id": state.active_run_id
+        if state
+        else settings.get("active_run_id"),
+        "last_transition_at": state.last_transition_at.isoformat()
+        if state and state.last_transition_at
+        else None,
+        "updated_by": state.updated_by if state else None,
+        "version": int(state.version) if state else None,
+        "bot_enabled_legacy": bot_enabled,
         "bot_enabled_raw": bot_enabled_raw,
-        "bot_enabled_env": _is_truthy(os.getenv("BOT_ENABLED", "true")),
+        "bot_enabled_env": is_truthy(os.getenv("BOT_ENABLED", "true")),
         "bot_resumed_at": settings.get("bot_resumed_at"),
-        "active_run_id": settings.get("active_run_id"),
         "active_strategy_version": settings.get("active_strategy_version"),
         "current_bankroll": settings.get("current_bankroll"),
         "daily_loss_limit_pct": settings.get("daily_loss_limit_pct"),
         "min_expected_edge_buffer": settings.get("min_expected_edge_buffer"),
-        "llm_enabled_env": _is_truthy(os.getenv("ENABLE_LLM", "false")),
+        "llm_enabled_env": is_truthy(os.getenv("ENABLE_LLM", "false")),
         "server_time_utc": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@router.get("/controls/state/events")
+async def get_control_state_events(
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+):
+    bounded_limit = max(1, min(limit, 200))
+    result = await db.execute(
+        select(BotStateEvent)
+        .order_by(BotStateEvent.created_at.desc())
+        .limit(bounded_limit)
+    )
+    events = result.scalars().all()
+    return [
+        {
+            "id": str(event.id),
+            "created_at": event.created_at.isoformat() if event.created_at else None,
+            "actor_type": event.actor_type,
+            "actor_id": event.actor_id,
+            "source": event.source,
+            "from_state": event.from_state,
+            "to_state": event.to_state,
+            "reason": event.reason,
+            "detail": event.detail,
+            "run_id": event.run_id,
+            "session_id": event.session_id,
+        }
+        for event in events
+    ]
 
 
 # ---------------------------------------------------------------------------

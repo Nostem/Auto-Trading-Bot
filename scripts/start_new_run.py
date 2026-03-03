@@ -20,6 +20,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from sqlalchemy import delete, select
 
+from api.bot_state import (
+    STATE_PAUSED_MANUAL,
+    STATE_RUNNING,
+    transition_bot_state,
+)
 from api.database import apply_runtime_migrations, async_session_factory
 from api.models import Position, Recommendation, Setting, Trade
 
@@ -108,6 +113,31 @@ async def run(args: argparse.Namespace) -> None:
         if args.enable_bot:
             await _upsert_setting(db_session, "bot_resumed_at", now.isoformat())
         await _upsert_setting(db_session, "last_run_rollover_at", now.isoformat())
+
+        if args.enable_bot:
+            await transition_bot_state(
+                db_session,
+                desired_state=STATE_RUNNING,
+                effective_state=STATE_RUNNING,
+                reason=None,
+                detail="New run started via start_new_run.py",
+                source="script.start_new_run",
+                actor_type="script",
+                run_id=run_id,
+                new_session=True,
+            )
+        else:
+            await transition_bot_state(
+                db_session,
+                desired_state=STATE_PAUSED_MANUAL,
+                effective_state=STATE_PAUSED_MANUAL,
+                reason="manual_pause",
+                detail="New run initialized in paused state",
+                source="script.start_new_run",
+                actor_type="script",
+                run_id=run_id,
+                new_session=False,
+            )
 
         await db_session.commit()
 

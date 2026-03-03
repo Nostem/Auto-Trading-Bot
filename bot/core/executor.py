@@ -73,7 +73,7 @@ class Executor:
         Place an order for the given signal. On success, insert into trades
         and positions tables. Returns True on success, False on failure.
         """
-        from api.models import Trade, Position
+        from api.models import BotState, Trade, Position
 
         # One active position per market ticker in current schema.
         # Skip additional entries until the existing position is closed.
@@ -113,6 +113,11 @@ class Executor:
         strategy_version = await self._get_setting(
             db_session, "active_strategy_version", "v1"
         )
+        state_result = await db_session.execute(
+            select(BotState).where(BotState.id == 1)
+        )
+        bot_state = state_result.scalar_one_or_none()
+        session_id = bot_state.session_id if bot_state else None
 
         price_cents = int(signal.entry_price * 100)
 
@@ -177,6 +182,7 @@ class Executor:
             status="open",
             entry_reasoning=signal.reasoning,
             run_id=active_run_id,
+            session_id=session_id,
             strategy_version=strategy_version,
             created_at=now,
         )
@@ -519,6 +525,7 @@ class Executor:
                     "net_pnl": float(representative_trade.net_pnl or 0),
                     "entry_reasoning": representative_trade.entry_reasoning,
                     "run_id": representative_trade.run_id,
+                    "session_id": representative_trade.session_id,
                     "strategy_version": representative_trade.strategy_version,
                     "created_at": representative_trade.created_at.isoformat(),
                     "resolved_at": now.isoformat(),

@@ -33,8 +33,9 @@ logger = logging.getLogger("bot.main")
 
 from sqlalchemy import select
 
+from api.bot_state import STATE_RUNNING, is_truthy
 from api.database import apply_runtime_migrations, async_session_factory, engine
-from api.models import Base
+from api.models import Base, BotState
 from bot.core.executor import Executor
 from bot.core.kalshi_client import KalshiClient
 from bot.core.scanner import Scanner
@@ -55,7 +56,7 @@ _scheduler = AsyncIOScheduler(timezone="UTC")
 
 
 def _is_truthy(value: object) -> bool:
-    return str(value).strip().lower() in {"true", "1", "yes", "on"}
+    return is_truthy(value)
 
 
 def _llm_enabled() -> bool:
@@ -150,16 +151,23 @@ async def scan_and_trade():
         return
 
     async with async_session_factory() as session:
-        # Re-check bot_enabled from DB settings
+        # Check bot state first (source of truth)
         from sqlalchemy import select, text
 
-        result = await session.execute(
-            text("SELECT value FROM settings WHERE key='bot_enabled'")
-        )
-        row = result.scalar_one_or_none()
-        if not _is_truthy(row):
+        state_result = await session.execute(select(BotState).where(BotState.id == 1))
+        bot_state = state_result.scalar_one_or_none()
+        if bot_state and bot_state.desired_state != STATE_RUNNING:
             logger.info(
-                "scan_and_trade: bot is paused (DB setting=%r) — skipping cycle", row
+                "scan_and_trade: desired_state=%s effective_state=%s — skipping cycle",
+                bot_state.desired_state,
+                bot_state.effective_state,
+            )
+            return
+        if bot_state and bot_state.effective_state != STATE_RUNNING:
+            logger.info(
+                "scan_and_trade: effective_state=%s reason=%s — skipping cycle",
+                bot_state.effective_state,
+                bot_state.pause_reason,
             )
             return
 
@@ -441,6 +449,26 @@ async def startup():
     # Validate enabled strategies from settings
     async with async_session_factory() as session:
         from sqlalchemy import text
+
+        # Ensure bot_state exists in long-lived deployments
+        state_result = await session.execute(select(BotState).where(BotState.id == 1))
+        if state_result.scalar_one_or_none() is None:
+            run_result = await session.execute(
+                text("SELECT value FROM settings WHERE key='active_run_id'")
+            )
+            active_run_id = run_result.scalar_one_or_none() or "legacy"
+            session.add(
+                BotState(
+                    id=1,
+                    desired_state=STATE_RUNNING,
+                    effective_state=STATE_RUNNING,
+                    active_run_id=active_run_id,
+                    session_id=f"sess-bootstrap-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}",
+                    updated_by="startup",
+                    version=1,
+                )
+            )
+            await session.commit()
 
         result = await session.execute(text("SELECT key, value FROM settings"))
         settings = {row[0]: row[1] for row in result.fetchall()}

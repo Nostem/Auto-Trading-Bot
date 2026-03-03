@@ -194,7 +194,7 @@ class RiskManager:
         Returns True if the daily loss limit has been hit (bot should pause).
         Queries today's closed trades to compute realized PnL.
         """
-        from api.models import Trade, Setting
+        from api.models import BotState, Trade, Setting
 
         # Get current bankroll from settings
         result = await db_session.execute(
@@ -207,47 +207,36 @@ class RiskManager:
             else float(os.getenv("INITIAL_BANKROLL", "5000"))
         )
 
-        # Get today's resolved PnL. If the operator manually resumed the bot,
-        # only count losses since that resume point (manual override window).
+        # Session-scoped daily loss: if a session_id exists, only count closed
+        # trades in that run/session. Fallback to UTC day scope for legacy rows.
         today_start = datetime.now(timezone.utc).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
-        window_start = today_start
-        resumed_at_raw = await self._get_setting(db_session, "bot_resumed_at", "")
-        if resumed_at_raw:
-            try:
-                resumed_at = datetime.fromisoformat(
-                    resumed_at_raw.replace("Z", "+00:00")
-                )
-                if resumed_at.tzinfo is None:
-                    resumed_at = resumed_at.replace(tzinfo=timezone.utc)
-                resumed_at = resumed_at.astimezone(timezone.utc)
-                if resumed_at > window_start:
-                    window_start = resumed_at
-            except ValueError:
-                logger.warning(
-                    "Invalid bot_resumed_at setting %r; falling back to UTC day start",
-                    resumed_at_raw,
-                )
+        state_result = await db_session.execute(
+            select(BotState).where(BotState.id == 1)
+        )
+        bot_state = state_result.scalar_one_or_none()
+        active_run_id = (
+            bot_state.active_run_id
+            if bot_state and bot_state.active_run_id
+            else await self._get_setting(db_session, "active_run_id", "legacy")
+        )
+        session_id = bot_state.session_id if bot_state else None
 
-        active_run_id = await self._get_setting(db_session, "active_run_id", "legacy")
-
-        # If the operator manually resumed intra-day, only count losses from
-        # trades opened after resume (fresh session). This prevents legacy
-        # positions opened earlier from instantly re-triggering auto-pause
-        # when they eventually resolve.
-        if window_start > today_start:
+        if session_id:
             pnl_query = select(func.sum(Trade.net_pnl)).where(
                 Trade.status == "closed",
                 Trade.run_id == active_run_id,
-                Trade.created_at >= window_start,
+                Trade.session_id == session_id,
             )
+            window_label = f"session:{session_id}"
         else:
             pnl_query = select(func.sum(Trade.net_pnl)).where(
                 Trade.status == "closed",
                 Trade.run_id == active_run_id,
-                Trade.resolved_at >= window_start,
+                Trade.resolved_at >= today_start,
             )
+            window_label = f"utc-day:{today_start.isoformat()}"
 
         result = await db_session.execute(pnl_query)
         today_pnl = float(result.scalar() or 0)
@@ -275,7 +264,7 @@ class RiskManager:
                 loss_limit,
                 daily_loss_pct * 100,
                 bankroll,
-                window_start.isoformat(),
+                window_label,
             )
             return True
 

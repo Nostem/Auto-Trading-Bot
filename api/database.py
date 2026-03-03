@@ -55,6 +55,7 @@ class Base(DeclarativeBase):
 
 _RUNTIME_MIGRATIONS = [
     "ALTER TABLE trades ADD COLUMN IF NOT EXISTS run_id VARCHAR(64)",
+    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS session_id VARCHAR(64)",
     "ALTER TABLE trades ADD COLUMN IF NOT EXISTS strategy_version VARCHAR(32)",
     "ALTER TABLE positions ADD COLUMN IF NOT EXISTS run_id VARCHAR(64)",
     "ALTER TABLE positions ADD COLUMN IF NOT EXISTS strategy_version VARCHAR(32)",
@@ -65,8 +66,40 @@ _RUNTIME_MIGRATIONS = [
     "ALTER TABLE weekly_reflections ADD COLUMN IF NOT EXISTS run_id VARCHAR(64)",
     "ALTER TABLE weekly_reflections ADD COLUMN IF NOT EXISTS strategy_version VARCHAR(32)",
     "CREATE INDEX IF NOT EXISTS idx_trades_run_id ON trades(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_trades_session_id ON trades(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_reflections_run_id ON reflections(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_recommendations_run_id ON recommendations(run_id)",
+    (
+        "CREATE TABLE IF NOT EXISTS bot_state ("
+        "id SMALLINT PRIMARY KEY CHECK (id = 1), "
+        "desired_state VARCHAR(32) NOT NULL, "
+        "effective_state VARCHAR(32) NOT NULL, "
+        "pause_reason VARCHAR(64), "
+        "pause_detail TEXT, "
+        "active_run_id VARCHAR(64) NOT NULL, "
+        "session_id VARCHAR(64), "
+        "last_transition_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), "
+        "updated_by VARCHAR(64) NOT NULL DEFAULT 'system', "
+        "version BIGINT NOT NULL DEFAULT 1"
+        ")"
+    ),
+    (
+        "CREATE TABLE IF NOT EXISTS bot_state_events ("
+        "id UUID PRIMARY KEY, "
+        "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), "
+        "actor_type VARCHAR(32) NOT NULL, "
+        "actor_id VARCHAR(128), "
+        "source VARCHAR(64) NOT NULL, "
+        "from_state VARCHAR(32), "
+        "to_state VARCHAR(32) NOT NULL, "
+        "reason VARCHAR(64), "
+        "detail JSONB, "
+        "run_id VARCHAR(64), "
+        "session_id VARCHAR(64)"
+        ")"
+    ),
+    "CREATE INDEX IF NOT EXISTS idx_bot_state_events_created_at ON bot_state_events(created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_bot_state_events_run_id ON bot_state_events(run_id)",
     "INSERT INTO settings (key, value) VALUES ('active_run_id', 'legacy') ON CONFLICT (key) DO NOTHING",
     "INSERT INTO settings (key, value) VALUES ('active_strategy_version', 'v1') ON CONFLICT (key) DO NOTHING",
     "INSERT INTO settings (key, value) VALUES ('min_expected_edge_buffer', '0.01') ON CONFLICT (key) DO NOTHING",
@@ -86,6 +119,14 @@ _RUNTIME_MIGRATIONS = [
     "UPDATE positions SET strategy_version = 'v1' WHERE strategy_version IS NULL",
     "UPDATE weekly_reflections SET run_id = 'legacy' WHERE run_id IS NULL",
     "UPDATE weekly_reflections SET strategy_version = 'v1' WHERE strategy_version IS NULL",
+    (
+        "INSERT INTO bot_state (id, desired_state, effective_state, active_run_id, updated_by, session_id) "
+        "VALUES (1, 'RUNNING', 'RUNNING', "
+        "COALESCE((SELECT value FROM settings WHERE key='active_run_id' LIMIT 1), 'legacy'), "
+        "'migration', "
+        "'sess-legacy') "
+        "ON CONFLICT (id) DO NOTHING"
+    ),
 ]
 
 

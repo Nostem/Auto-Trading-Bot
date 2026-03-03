@@ -14,6 +14,7 @@ from typing import Any
 
 from sqlalchemy import delete, select
 
+from api.bot_state import STATE_RUNNING, transition_bot_state
 from api.database import async_session_factory
 from api.models import (
     Position,
@@ -173,6 +174,18 @@ async def run(args: argparse.Namespace) -> None:
         await _upsert_setting(session, "bot_enabled", "true")
         await _upsert_setting(session, "bot_resumed_at", now.isoformat())
         await _upsert_setting(session, "last_run_rollover_at", now.isoformat())
+
+        await transition_bot_state(
+            session,
+            desired_state=STATE_RUNNING,
+            effective_state=STATE_RUNNING,
+            reason=None,
+            detail="Reset via archive_and_start_fresh.py",
+            source="script.archive_and_start_fresh",
+            actor_type="script",
+            run_id=new_run_id,
+            new_session=True,
+        )
 
         await session.commit()
 
