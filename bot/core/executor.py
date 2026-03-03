@@ -244,6 +244,7 @@ class Executor:
                 logger.error(
                     "Executor: error monitoring %s: %s", position.market_id, exc
                 )
+                await db_session.rollback()
 
     async def _check_position(self, position, client, db_session, reflection_callback):
         """Check and update a single position."""

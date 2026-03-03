@@ -103,6 +103,10 @@ app.include_router(reflections.router)
 app.include_router(controls.router)
 
 
+def _is_truthy(value: object) -> bool:
+    return str(value).strip().lower() in {"true", "1", "yes", "on"}
+
+
 @app.get("/health")
 async def health():
     from api.database import async_session_factory
@@ -116,7 +120,7 @@ async def health():
                 text("SELECT value FROM settings WHERE key='bot_enabled'")
             )
             row = result.scalar_one_or_none()
-            bot_enabled = row == "true" if row else False
+            bot_enabled = _is_truthy(row)
             db_ok = True
     except Exception as exc:
         logger.debug("Health check DB error: %s", exc)

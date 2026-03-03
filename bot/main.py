@@ -54,6 +54,14 @@ _risk_manager = RiskManager()
 _scheduler = AsyncIOScheduler(timezone="UTC")
 
 
+def _is_truthy(value: object) -> bool:
+    return str(value).strip().lower() in {"true", "1", "yes", "on"}
+
+
+def _llm_enabled() -> bool:
+    return _is_truthy(os.getenv("ENABLE_LLM", "false"))
+
+
 # ---------------------------------------------------------------------------
 # LLM connectivity test
 # ---------------------------------------------------------------------------
@@ -64,6 +72,10 @@ async def _test_llm_connection() -> None:
     Test LLM connectivity at startup and log clear pass/fail status.
     Non-blocking — failure just means reflections use fallback text.
     """
+    if not _llm_enabled():
+        logger.info("LLM disabled via ENABLE_LLM=false")
+        return
+
     import anthropic as anth
 
     minimax_key = os.getenv("MINIMAX_CODING_PLAN_API_KEY", "").strip()
@@ -145,8 +157,10 @@ async def scan_and_trade():
             text("SELECT value FROM settings WHERE key='bot_enabled'")
         )
         row = result.scalar_one_or_none()
-        if row != "true":
-            logger.info("scan_and_trade: bot is paused (DB setting) — skipping cycle")
+        if not _is_truthy(row):
+            logger.info(
+                "scan_and_trade: bot is paused (DB setting=%r) — skipping cycle", row
+            )
             return
 
         # Get current bankroll
@@ -207,6 +221,9 @@ async def _reflect_on_trade(trade_dict: dict):
     Only generates a reflection after 3 consecutive losses to reduce API calls.
     Always checks loss triggers for parameter recommendations.
     """
+    if not _llm_enabled():
+        return
+
     is_loss = float(trade_dict.get("net_pnl", 0)) < 0
 
     if is_loss:
@@ -384,6 +401,9 @@ async def git_backup():
 
 async def daily_reflection():
     """Run at 00:05 UTC daily; generate weekly report on Mondays."""
+    if not _llm_enabled():
+        return
+
     day_of_week = datetime.now(timezone.utc).weekday()  # 0=Monday
     if day_of_week == 0:
         async with async_session_factory() as session:
