@@ -92,6 +92,7 @@ _RUNTIME_MIGRATIONS = [
 async def apply_runtime_migrations() -> None:
     """Apply additive runtime migrations for long-lived deployments."""
     async with engine.begin() as conn:
+        await conn.execute(text("SELECT pg_advisory_xact_lock(42424242)"))
         for statement in _RUNTIME_MIGRATIONS:
             await conn.execute(text(statement))
 
