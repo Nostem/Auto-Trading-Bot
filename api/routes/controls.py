@@ -43,7 +43,9 @@ async def pause_bot(db: AsyncSession = Depends(get_db)):
 
 @router.post("/controls/resume")
 async def resume_bot(db: AsyncSession = Depends(get_db)):
+    resumed_at = datetime.now(timezone.utc).isoformat()
     await _upsert_setting(db, "bot_enabled", "true")
+    await _upsert_setting(db, "bot_resumed_at", resumed_at)
     return {"status": "active", "bot_enabled": True}
 
 

@@ -105,6 +105,8 @@ async def run(args: argparse.Namespace) -> None:
             "bot_enabled",
             "true" if args.enable_bot else "false",
         )
+        if args.enable_bot:
+            await _upsert_setting(db_session, "bot_resumed_at", now.isoformat())
         await _upsert_setting(db_session, "last_run_rollover_at", now.isoformat())
 
         await db_session.commit()

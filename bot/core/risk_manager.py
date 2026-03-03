@@ -207,14 +207,33 @@ class RiskManager:
             else float(os.getenv("INITIAL_BANKROLL", "5000"))
         )
 
-        # Get today's resolved PnL
+        # Get today's resolved PnL. If the operator manually resumed the bot,
+        # only count losses since that resume point (manual override window).
         today_start = datetime.now(timezone.utc).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
+        window_start = today_start
+        resumed_at_raw = await self._get_setting(db_session, "bot_resumed_at", "")
+        if resumed_at_raw:
+            try:
+                resumed_at = datetime.fromisoformat(
+                    resumed_at_raw.replace("Z", "+00:00")
+                )
+                if resumed_at.tzinfo is None:
+                    resumed_at = resumed_at.replace(tzinfo=timezone.utc)
+                resumed_at = resumed_at.astimezone(timezone.utc)
+                if resumed_at > window_start:
+                    window_start = resumed_at
+            except ValueError:
+                logger.warning(
+                    "Invalid bot_resumed_at setting %r; falling back to UTC day start",
+                    resumed_at_raw,
+                )
+
         active_run_id = await self._get_setting(db_session, "active_run_id", "legacy")
         result = await db_session.execute(
             select(func.sum(Trade.net_pnl)).where(
-                Trade.resolved_at >= today_start,
+                Trade.resolved_at >= window_start,
                 Trade.status == "closed",
                 Trade.run_id == active_run_id,
             )
@@ -223,15 +242,28 @@ class RiskManager:
 
         # Read daily_loss_limit_pct from DB (UI-controlled), fall back to env/default
         db_limit = await self._get_setting(db_session, "daily_loss_limit_pct", "")
-        daily_loss_pct = float(db_limit) if db_limit else self.daily_loss_limit_pct
+        try:
+            daily_loss_pct = float(db_limit) if db_limit else self.daily_loss_limit_pct
+        except (TypeError, ValueError):
+            daily_loss_pct = self.daily_loss_limit_pct
+
+        if bankroll <= 0 or daily_loss_pct <= 0:
+            logger.warning(
+                "Daily loss check skipped due to non-positive bankroll/limit (bankroll=%.2f, pct=%.4f)",
+                bankroll,
+                daily_loss_pct,
+            )
+            return False
+
         loss_limit = bankroll * daily_loss_pct
         if today_pnl <= -loss_limit:
             logger.critical(
-                "Daily loss limit hit: today_pnl=$%.2f, limit=-$%.2f (%.0f%% of bankroll=$%.2f)",
+                "Daily loss limit hit: pnl_since_window=$%.2f, limit=-$%.2f (%.0f%% of bankroll=$%.2f, window_start=%s)",
                 today_pnl,
                 loss_limit,
                 daily_loss_pct * 100,
                 bankroll,
+                window_start.isoformat(),
             )
             return True
 
