@@ -128,21 +128,11 @@ async def get_control_state(db: AsyncSession = Depends(get_db)):
     state_result = await db.execute(select(BotState).where(BotState.id == 1))
     state = state_result.scalar_one_or_none()
 
-    bot_enabled_raw = settings.get("bot_enabled")
-    bot_enabled = is_truthy(bot_enabled_raw)
-
-    desired_state = (
-        state.desired_state
-        if state
-        else (STATE_RUNNING if bot_enabled else STATE_PAUSED_MANUAL)
-    )
-    effective_state = (
-        state.effective_state
-        if state
-        else (STATE_RUNNING if bot_enabled else STATE_PAUSED_MANUAL)
-    )
+    desired_state = state.desired_state if state else STATE_RUNNING
+    effective_state = state.effective_state if state else STATE_RUNNING
 
     return {
+        "bot_enabled": effective_state == STATE_RUNNING,
         "desired_state": desired_state,
         "effective_state": effective_state,
         "pause_reason": state.pause_reason if state else None,
@@ -156,10 +146,7 @@ async def get_control_state(db: AsyncSession = Depends(get_db)):
         else None,
         "updated_by": state.updated_by if state else None,
         "version": int(state.version) if state else None,
-        "bot_enabled_legacy": bot_enabled,
-        "bot_enabled_raw": bot_enabled_raw,
         "bot_enabled_env": is_truthy(os.getenv("BOT_ENABLED", "true")),
-        "bot_resumed_at": settings.get("bot_resumed_at"),
         "active_strategy_version": settings.get("active_strategy_version"),
         "current_bankroll": settings.get("current_bankroll"),
         "daily_loss_limit_pct": settings.get("daily_loss_limit_pct"),

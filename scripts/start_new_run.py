@@ -72,6 +72,7 @@ async def run(args: argparse.Namespace) -> None:
         positions_deleted = await db_session.execute(
             delete(Position).where(Position.run_id == prior_run_id)
         )
+        deleted_positions_count = int(getattr(positions_deleted, "rowcount", 0) or 0)
 
         if not args.keep_pending_recommendations:
             recs_result = await db_session.execute(
@@ -105,13 +106,6 @@ async def run(args: argparse.Namespace) -> None:
             "min_expected_edge_buffer",
             f"{args.min_expected_edge_buffer:.4f}",
         )
-        await _upsert_setting(
-            db_session,
-            "bot_enabled",
-            "true" if args.enable_bot else "false",
-        )
-        if args.enable_bot:
-            await _upsert_setting(db_session, "bot_resumed_at", now.isoformat())
         await _upsert_setting(db_session, "last_run_rollover_at", now.isoformat())
 
         if args.enable_bot:
@@ -145,12 +139,12 @@ async def run(args: argparse.Namespace) -> None:
     print(f"run_id={run_id}")
     print(f"strategy_version={args.strategy_version}")
     print(f"archived_open_trades={len(open_trades)}")
-    print(f"deleted_positions={positions_deleted.rowcount or 0}")
+    print(f"deleted_positions={deleted_positions_count}")
     print(f"archived_pending_recommendations={len(pending_recs)}")
     print(f"current_bankroll={args.initial_bankroll:.2f}")
     print(f"daily_loss_limit_pct={args.daily_loss_limit_pct:.4f}")
     print(f"min_expected_edge_buffer={args.min_expected_edge_buffer:.4f}")
-    print(f"bot_enabled={'true' if args.enable_bot else 'false'}")
+    print(f"desired_state={'RUNNING' if args.enable_bot else 'PAUSED_MANUAL'}")
 
 
 def parse_args() -> argparse.Namespace:

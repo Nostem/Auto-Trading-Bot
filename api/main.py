@@ -110,7 +110,6 @@ def _is_truthy(value: object) -> bool:
 @app.get("/health")
 async def health():
     from api.database import async_session_factory
-    from sqlalchemy import text
     from api.models import BotState
     from sqlalchemy import select
 
@@ -119,16 +118,12 @@ async def health():
     bot_effective_state = None
     try:
         async with async_session_factory() as session:
-            result = await session.execute(
-                text("SELECT value FROM settings WHERE key='bot_enabled'")
-            )
-            row = result.scalar_one_or_none()
-            bot_enabled = _is_truthy(row)
             state_result = await session.execute(
                 select(BotState).where(BotState.id == 1)
             )
             state = state_result.scalar_one_or_none()
-            bot_effective_state = state.effective_state if state else None
+            bot_effective_state = state.effective_state if state else "UNKNOWN"
+            bot_enabled = bot_effective_state == "RUNNING"
             db_ok = True
     except Exception as exc:
         logger.debug("Health check DB error: %s", exc)

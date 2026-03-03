@@ -171,8 +171,6 @@ async def run(args: argparse.Namespace) -> None:
         await _upsert_setting(session, "active_run_id", new_run_id)
         await _upsert_setting(session, "active_strategy_version", strategy_version)
         await _upsert_setting(session, "current_bankroll", str(bankroll))
-        await _upsert_setting(session, "bot_enabled", "true")
-        await _upsert_setting(session, "bot_resumed_at", now.isoformat())
         await _upsert_setting(session, "last_run_rollover_at", now.isoformat())
 
         await transition_bot_state(

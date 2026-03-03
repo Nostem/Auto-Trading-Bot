@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, Settings, Recommendation } from "@/lib/api";
+import { api, Settings, Recommendation, ControlState } from "@/lib/api";
 
 function Toggle({
   label,
@@ -31,6 +31,7 @@ function Toggle({
 
 export default function ControlsPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [controlState, setControlState] = useState<ControlState | null>(null);
   const [maxPos, setMaxPos] = useState(15);
   const [dailyLoss, setDailyLoss] = useState(3);
   const [sizingMode, setSizingMode] = useState<"fixed_dollar" | "percentage">("fixed_dollar");
@@ -46,9 +47,10 @@ export default function ControlsPage() {
   const [showHistory, setShowHistory] = useState(false);
 
   useEffect(() => {
-    Promise.all([api.getSettings(), api.getRecommendations()])
-      .then(([s, recs]) => {
+    Promise.all([api.getSettings(), api.getRecommendations(), api.getControlState()])
+      .then(([s, recs, state]) => {
         setSettings(s);
+        setControlState(state);
         setMaxPos(Math.round(parseFloat(s.max_position_pct || "0.15") * 100));
         setDailyLoss(Math.round(parseFloat(s.daily_loss_limit_pct || "0.03") * 100));
         setSizingMode((s.sizing_mode as "fixed_dollar" | "percentage") || "fixed_dollar");
@@ -59,15 +61,16 @@ export default function ControlsPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  const botEnabled = settings?.bot_enabled === "true";
+  const botEnabled = controlState?.bot_enabled ?? false;
 
   const handleApprove = async (id: string) => {
     try {
       await api.approveRecommendation(id);
       setRecommendations((prev) => prev.filter((r) => r.id !== id));
       // Refresh settings since a value changed
-      const s = await api.getSettings();
+      const [s, state] = await Promise.all([api.getSettings(), api.getControlState()]);
       setSettings(s);
+      setControlState(state);
       setMaxPos(Math.round(parseFloat(s.max_position_pct || "0.15") * 100));
       setDailyLoss(Math.round(parseFloat(s.daily_loss_limit_pct || "0.03") * 100));
     } catch (e) {
@@ -109,10 +112,10 @@ export default function ControlsPage() {
   };
 
   const toggleBot = async () => {
-    if (!settings) return;
     const fn = botEnabled ? api.pauseBot : api.resumeBot;
     await fn();
-    setSettings({ ...settings, bot_enabled: botEnabled ? "false" : "true" });
+    const state = await api.getControlState();
+    setControlState(state);
   };
 
   const saveSettings = async () => {
@@ -168,6 +171,11 @@ export default function ControlsPage() {
             <p className="text-xs mt-0.5" style={{ color: "#555" }}>
               {botEnabled ? "Scanning and trading normally" : "All trading halted"}
             </p>
+            {controlState?.pause_reason && (
+              <p className="text-xs mt-0.5" style={{ color: "#888" }}>
+                Reason: {controlState.pause_reason}
+              </p>
+            )}
           </div>
           <button
             onClick={toggleBot}

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.models import BotState, BotStateEvent, Setting
+from api.models import BotState, BotStateEvent
 
 STATE_RUNNING = "RUNNING"
 STATE_PAUSED_MANUAL = "PAUSED_MANUAL"
@@ -28,42 +28,22 @@ def make_session_id(now: datetime | None = None) -> str:
     return f"sess-{current.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
 
-async def _get_setting(session: AsyncSession, key: str, default: str) -> str:
-    result = await session.execute(select(Setting).where(Setting.key == key))
-    setting = result.scalar_one_or_none()
-    return setting.value if setting else default
-
-
-async def _upsert_setting(session: AsyncSession, key: str, value: str) -> None:
-    result = await session.execute(select(Setting).where(Setting.key == key))
-    setting = result.scalar_one_or_none()
-    if setting:
-        setting.value = value
-        setting.updated_at = datetime.now(timezone.utc)
-    else:
-        session.add(
-            Setting(key=key, value=value, updated_at=datetime.now(timezone.utc))
-        )
-
-
 async def get_or_create_bot_state(session: AsyncSession) -> BotState:
     result = await session.execute(select(BotState).where(BotState.id == 1))
     state = result.scalar_one_or_none()
     if state:
         return state
 
-    active_run_id = await _get_setting(session, "active_run_id", "legacy")
     state = BotState(
         id=1,
         desired_state=STATE_RUNNING,
         effective_state=STATE_RUNNING,
-        active_run_id=active_run_id,
+        active_run_id="legacy",
         session_id=make_session_id(),
         updated_by="bootstrap",
         version=1,
     )
     session.add(state)
-    await _upsert_setting(session, "bot_enabled", "true")
     return state
 
 
@@ -114,12 +94,5 @@ async def transition_bot_state(
             created_at=now,
         )
     )
-
-    # Temporary compatibility mirror for existing controls/UI.
-    legacy_enabled = "true" if state.effective_state == STATE_RUNNING else "false"
-    await _upsert_setting(session, "bot_enabled", legacy_enabled)
-    if new_session:
-        await _upsert_setting(session, "bot_resumed_at", now.isoformat())
-    await _upsert_setting(session, "active_run_id", state.active_run_id)
 
     return state

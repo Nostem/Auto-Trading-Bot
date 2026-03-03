@@ -105,7 +105,6 @@ export interface Recommendation {
 }
 
 export interface Settings {
-  bot_enabled: string;
   bond_strategy_enabled: string;
   market_making_enabled: string;
   btc_strategy_enabled: string;
@@ -115,6 +114,26 @@ export interface Settings {
   sizing_mode: string;
   fixed_trade_amount: string;
   [key: string]: string;  // allow extra settings from DB
+}
+
+export interface ControlState {
+  bot_enabled: boolean;
+  desired_state: string;
+  effective_state: string;
+  pause_reason: string | null;
+  pause_detail: string | null;
+  session_id: string | null;
+  active_run_id: string | null;
+  last_transition_at: string | null;
+  updated_by: string | null;
+  version: number | null;
+  bot_enabled_env: boolean;
+  active_strategy_version: string | null;
+  current_bankroll: string | null;
+  daily_loss_limit_pct: string | null;
+  min_expected_edge_buffer: string | null;
+  llm_enabled_env: boolean;
+  server_time_utc: string;
 }
 
 // ---- API calls ----
@@ -139,8 +158,21 @@ export const api = {
     ),
   getWeeklyReflections: () => apiFetch<WeeklyReflection[]>("/reflections/weekly"),
   getSettings: () => apiFetch<Settings>("/controls/settings"),
-  pauseBot: () => apiFetch("/controls/pause", { method: "POST" }),
-  resumeBot: () => apiFetch("/controls/resume", { method: "POST" }),
+  getControlState: () => apiFetch<ControlState>("/controls/state"),
+  pauseBot: () =>
+    apiFetch<{
+      status: string;
+      desired_state: string;
+      effective_state: string;
+      session_id: string | null;
+    }>("/controls/pause", { method: "POST" }),
+  resumeBot: () =>
+    apiFetch<{
+      status: string;
+      desired_state: string;
+      effective_state: string;
+      session_id: string | null;
+    }>("/controls/resume", { method: "POST" }),
   toggleStrategy: (key: string, enabled: boolean) =>
     apiFetch("/controls/strategy", {
       method: "POST",
