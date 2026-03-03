@@ -57,8 +57,6 @@ class Scanner:
         loss_limit_hit = await self.risk_manager.check_daily_loss_limit(db_session)
         if loss_limit_hit:
             logger.warning("Scanner: daily loss limit hit — skipping scan cycle")
-            # Persist the pause
-            await self._set_setting(db_session, "bot_enabled", "false")
             return []
 
         # --- Step 3: Gather open positions for risk checks ---
