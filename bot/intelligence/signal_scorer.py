@@ -82,7 +82,7 @@ class SignalScorer:
     def filter_minimum_edge(
         self,
         signals: list[TradeSignal],
-        min_edge: float = 0.02,
+        min_edge: float = 0.01,
     ) -> list[TradeSignal]:
         """Remove signals where expected_value (edge) is below the threshold."""
         filtered = [s for s in signals if s.expected_value >= min_edge]
