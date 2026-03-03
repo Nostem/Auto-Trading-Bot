@@ -2,6 +2,7 @@
 Executor — the only module that places real orders and writes to the
 trades/positions tables. No strategy logic lives here.
 """
+
 import asyncio
 import logging
 import os
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 from bot.intelligence.param_guardrails import TUNABLE_PARAMS
 
 KALSHI_FEE_PER_CONTRACT = 0.07  # per contract per side
-BOND_ALERT_THRESHOLD = 0.10      # log ERROR if bond position moves > 10¢ against us
+BOND_ALERT_THRESHOLD = 0.10  # log ERROR if bond position moves > 10¢ against us
 
 # Strategy-to-param-key mapping for pre-expiry seconds
 _PRE_EXPIRY_KEYS = {
@@ -37,14 +38,20 @@ class Executor:
     """Places orders, records trades, and monitors open positions."""
 
     @staticmethod
+    async def _get_setting(db_session, key: str, default: str) -> str:
+        from api.models import Setting
+
+        result = await db_session.execute(select(Setting).where(Setting.key == key))
+        setting = result.scalar_one_or_none()
+        return setting.value if setting else default
+
+    @staticmethod
     async def _get_param(db_session, key: str) -> float | int:
         """Read a tunable parameter from the settings table, with guardrail default fallback."""
         from api.models import Setting
 
         spec = TUNABLE_PARAMS[key]
-        result = await db_session.execute(
-            select(Setting).where(Setting.key == key)
-        )
+        result = await db_session.execute(select(Setting).where(Setting.key == key))
         setting = result.scalar_one_or_none()
         raw = setting.value if setting else str(spec["default"])
         try:
@@ -68,6 +75,45 @@ class Executor:
         """
         from api.models import Trade, Position
 
+        # One active position per market ticker in current schema.
+        # Skip additional entries until the existing position is closed.
+        existing_position_result = await db_session.execute(
+            select(Position).where(Position.market_id == signal.ticker)
+        )
+        if existing_position_result.scalar_one_or_none():
+            logger.info(
+                "Executor: skipped %s %s — market already has an open position",
+                signal.ticker,
+                signal.side,
+            )
+            return False
+
+        min_edge_buffer_raw = await self._get_setting(
+            db_session,
+            "min_expected_edge_buffer",
+            "0.01",
+        )
+        try:
+            min_edge_buffer = max(0.0, float(min_edge_buffer_raw))
+        except (TypeError, ValueError):
+            min_edge_buffer = 0.01
+
+        required_edge = (KALSHI_FEE_PER_CONTRACT * 2) + min_edge_buffer
+        if signal.expected_value < required_edge:
+            logger.info(
+                "Executor: fee gate rejected %s %s (edge=%.4f, required=%.4f)",
+                signal.ticker,
+                signal.side,
+                signal.expected_value,
+                required_edge,
+            )
+            return False
+
+        active_run_id = await self._get_setting(db_session, "active_run_id", "legacy")
+        strategy_version = await self._get_setting(
+            db_session, "active_strategy_version", "v1"
+        )
+
         price_cents = int(signal.entry_price * 100)
 
         if PAPER_TRADE:
@@ -75,7 +121,11 @@ class Executor:
             order_id = f"paper-{uuid.uuid4().hex[:12]}"
             logger.info(
                 "Executor [PAPER]: would place %s %s %d @ %d¢ (paper_id=%s)",
-                signal.ticker, signal.side, signal.proposed_size, price_cents, order_id,
+                signal.ticker,
+                signal.side,
+                signal.proposed_size,
+                price_cents,
+                order_id,
             )
         else:
             try:
@@ -89,14 +139,22 @@ class Executor:
             except Exception as exc:
                 logger.error(
                     "Executor: failed to place order for %s %s: %s",
-                    signal.ticker, signal.side, exc,
+                    signal.ticker,
+                    signal.side,
+                    exc,
                 )
                 return False
 
-            order_id = order_result.get("order", {}).get("order_id") or order_result.get("order_id")
+            order_id = order_result.get("order", {}).get(
+                "order_id"
+            ) or order_result.get("order_id")
             logger.info(
                 "Executor: order placed — %s %s %d @ %d¢ (order_id=%s)",
-                signal.ticker, signal.side, signal.proposed_size, price_cents, order_id,
+                signal.ticker,
+                signal.side,
+                signal.proposed_size,
+                price_cents,
+                order_id,
             )
 
         now = datetime.now(timezone.utc)
@@ -118,29 +176,28 @@ class Executor:
             entry_price=signal.entry_price,
             status="open",
             entry_reasoning=signal.reasoning,
+            run_id=active_run_id,
+            strategy_version=strategy_version,
             created_at=now,
         )
         db_session.add(trade)
 
-        # --- Insert into positions table (upsert by market_id) ---
-        result = await db_session.execute(
-            select(Position).where(Position.market_id == signal.ticker)
+        # --- Insert into positions table ---
+        position = Position(
+            market_id=signal.ticker,
+            market_title=signal.market_title,
+            strategy=signal.strategy,
+            side=signal.side,
+            size=signal.proposed_size,
+            entry_price=signal.entry_price,
+            current_price=signal.entry_price,
+            unrealized_pnl=0.0,
+            run_id=active_run_id,
+            strategy_version=strategy_version,
+            opened_at=now,
+            expires_at=expires_at,
         )
-        existing = result.scalar_one_or_none()
-        if not existing:
-            position = Position(
-                market_id=signal.ticker,
-                market_title=signal.market_title,
-                strategy=signal.strategy,
-                side=signal.side,
-                size=signal.proposed_size,
-                entry_price=signal.entry_price,
-                current_price=signal.entry_price,
-                unrealized_pnl=0.0,
-                opened_at=now,
-                expires_at=expires_at,
-            )
-            db_session.add(position)
+        db_session.add(position)
 
         try:
             await db_session.commit()
@@ -195,7 +252,9 @@ class Executor:
         try:
             market = await client.get_market(position.market_id)
         except Exception as exc:
-            logger.warning("Executor: failed to fetch market %s: %s", position.market_id, exc)
+            logger.warning(
+                "Executor: failed to fetch market %s: %s", position.market_id, exc
+            )
             return
 
         # Backfill expires_at from market data if missing
@@ -207,7 +266,8 @@ class Executor:
                 )
                 logger.info(
                     "Executor: backfilled expires_at for %s → %s",
-                    position.market_id, position.expires_at.isoformat(),
+                    position.market_id,
+                    position.expires_at.isoformat(),
                 )
 
         # Get current price for position's side
@@ -230,7 +290,9 @@ class Executor:
         if market_status in ("resolved", "settled"):
             result_side = market.get("result", "")
             await self.close_position(
-                position, client, db_session,
+                position,
+                client,
+                db_session,
                 reason=f"Market resolved: {result_side}",
                 resolution_result=result_side,
                 reflection_callback=reflection_callback,
@@ -245,15 +307,23 @@ class Executor:
         if position.expires_at:
             time_to_expiry = (position.expires_at - now).total_seconds()
             pre_expiry_key = _PRE_EXPIRY_KEYS.get(strategy)
-            threshold = await self._get_param(db_session, pre_expiry_key) if pre_expiry_key else None
+            threshold = (
+                await self._get_param(db_session, pre_expiry_key)
+                if pre_expiry_key
+                else None
+            )
             if threshold and time_to_expiry <= threshold:
                 reason = f"Pre-expiry exit ({strategy}, {threshold}s before close)"
                 logger.warning(
                     "Executor: %s on %s — %.0fs to expiry",
-                    reason, position.market_id, time_to_expiry,
+                    reason,
+                    position.market_id,
+                    time_to_expiry,
                 )
                 await self.close_position(
-                    position, client, db_session,
+                    position,
+                    client,
+                    db_session,
                     reason=reason,
                     reflection_callback=reflection_callback,
                 )
@@ -265,24 +335,34 @@ class Executor:
             bond_stop_loss = await self._get_param(db_session, "bond_stop_loss_cents")
             price_drop = entry_price - current_price
             if price_drop >= bond_stop_loss:
-                reason = f"Bond stop-loss ({price_drop:.2f} drop from {entry_price:.2f})"
+                reason = (
+                    f"Bond stop-loss ({price_drop:.2f} drop from {entry_price:.2f})"
+                )
                 logger.warning("Executor: %s on %s", reason, position.market_id)
                 await self.close_position(
-                    position, client, db_session,
+                    position,
+                    client,
+                    db_session,
                     reason=reason,
                     reflection_callback=reflection_callback,
                 )
                 return
         else:
             # MM and BTC: percentage-based stop-loss
-            stop_loss_threshold = await self._get_param(db_session, "stop_loss_threshold")
+            stop_loss_threshold = await self._get_param(
+                db_session, "stop_loss_threshold"
+            )
             if entry_value > 0 and unrealized <= -(entry_value * stop_loss_threshold):
                 logger.warning(
                     "Executor: stop-loss triggered on %s — loss %.2f exceeds %.0f%% threshold",
-                    position.market_id, unrealized, stop_loss_threshold * 100,
+                    position.market_id,
+                    unrealized,
+                    stop_loss_threshold * 100,
                 )
                 await self.close_position(
-                    position, client, db_session,
+                    position,
+                    client,
+                    db_session,
                     reason=f"Stop-loss triggered ({strategy}, {stop_loss_threshold:.0%})",
                     reflection_callback=reflection_callback,
                 )
@@ -296,7 +376,9 @@ class Executor:
                 reason = f"BTC take-profit ({profit_pct:.0%} gain)"
                 logger.info("Executor: %s on %s", reason, position.market_id)
                 await self.close_position(
-                    position, client, db_session,
+                    position,
+                    client,
+                    db_session,
                     reason=reason,
                     reflection_callback=reflection_callback,
                 )
@@ -310,7 +392,9 @@ class Executor:
                 reason = f"MM time limit ({hours_held:.1f}h held, max {mm_max_hold}h)"
                 logger.warning("Executor: %s on %s", reason, position.market_id)
                 await self.close_position(
-                    position, client, db_session,
+                    position,
+                    client,
+                    db_session,
                     reason=reason,
                     reflection_callback=reflection_callback,
                 )
@@ -323,7 +407,10 @@ class Executor:
                 logger.error(
                     "Executor: ALERT — bond position %s moved %.3f against us "
                     "(entry=%.2f, current=%.2f)",
-                    position.market_id, adverse_move, entry_price, current_price,
+                    position.market_id,
+                    adverse_move,
+                    entry_price,
+                    current_price,
                 )
 
         await db_session.commit()
@@ -349,7 +436,8 @@ class Executor:
 
         logger.info(
             "Executor: closing position %s — %s",
-            position.market_id, reason,
+            position.market_id,
+            reason,
         )
 
         # Cancel any open orders for this market
@@ -361,16 +449,12 @@ class Executor:
         except Exception as exc:
             logger.warning(
                 "Executor: error cancelling orders for %s: %s",
-                position.market_id, exc,
+                position.market_id,
+                exc,
             )
 
         # Determine exit price
         exit_price = float(position.current_price or position.entry_price)
-
-        # Calculate PnL
-        gross_pnl = (exit_price - float(position.entry_price)) * position.size
-        fees = KALSHI_FEE_PER_CONTRACT * position.size * 2  # entry + exit
-        net_pnl = gross_pnl - fees
 
         now = datetime.now(timezone.utc)
 
@@ -381,18 +465,26 @@ class Executor:
                 Trade.status == "open",
             )
         )
-        trade = result.scalar_one_or_none()
-        if trade:
-            trade.exit_price = exit_price
-            trade.gross_pnl = gross_pnl
-            trade.fees = fees
-            trade.net_pnl = net_pnl
-            trade.status = "closed"
-            trade.resolved_at = now
+        open_trades = result.scalars().all()
+        if open_trades:
+            for trade in open_trades:
+                trade_exit_price = exit_price
+                trade_gross_pnl = (
+                    trade_exit_price - float(trade.entry_price)
+                ) * trade.size
+                trade_fees = KALSHI_FEE_PER_CONTRACT * trade.size * 2
+                trade_net_pnl = trade_gross_pnl - trade_fees
+                trade.exit_price = trade_exit_price
+                trade.gross_pnl = trade_gross_pnl
+                trade.fees = trade_fees
+                trade.net_pnl = trade_net_pnl
+                trade.status = "closed"
+                trade.resolved_at = now
 
             logger.info(
-                "Executor: trade closed — %s %s, net_pnl=$%.2f",
-                position.market_id, position.side, net_pnl,
+                "Executor: closed %d trade record(s) for %s",
+                len(open_trades),
+                position.market_id,
             )
 
             # Update bankroll
@@ -402,26 +494,32 @@ class Executor:
             bankroll_setting = result.scalar_one_or_none()
             if bankroll_setting:
                 old_bankroll = float(bankroll_setting.value)
-                new_bankroll = old_bankroll + net_pnl
+                total_net_pnl = sum(float(t.net_pnl or 0) for t in open_trades)
+                new_bankroll = old_bankroll + total_net_pnl
                 bankroll_setting.value = f"{new_bankroll:.2f}"
                 logger.info(
                     "Executor: bankroll updated $%.2f → $%.2f (pnl=$%.2f)",
-                    old_bankroll, new_bankroll, net_pnl,
+                    old_bankroll,
+                    new_bankroll,
+                    total_net_pnl,
                 )
 
             # Fire reflection asynchronously — don't block trading
-            if reflection_callback and trade:
+            if reflection_callback:
+                representative_trade = open_trades[-1]
                 trade_dict = {
-                    "id": str(trade.id),
-                    "market_id": trade.market_id,
-                    "market_title": trade.market_title,
-                    "strategy": trade.strategy,
-                    "side": trade.side,
-                    "entry_price": float(trade.entry_price),
+                    "id": str(representative_trade.id),
+                    "market_id": representative_trade.market_id,
+                    "market_title": representative_trade.market_title,
+                    "strategy": representative_trade.strategy,
+                    "side": representative_trade.side,
+                    "entry_price": float(representative_trade.entry_price),
                     "exit_price": exit_price,
-                    "net_pnl": net_pnl,
-                    "entry_reasoning": trade.entry_reasoning,
-                    "created_at": trade.created_at.isoformat(),
+                    "net_pnl": float(representative_trade.net_pnl or 0),
+                    "entry_reasoning": representative_trade.entry_reasoning,
+                    "run_id": representative_trade.run_id,
+                    "strategy_version": representative_trade.strategy_version,
+                    "created_at": representative_trade.created_at.isoformat(),
                     "resolved_at": now.isoformat(),
                 }
                 asyncio.create_task(reflection_callback(trade_dict))
@@ -434,6 +532,7 @@ class Executor:
         except Exception as exc:
             logger.critical(
                 "Executor: DB commit failed on close_position for %s: %s",
-                position.market_id, exc,
+                position.market_id,
+                exc,
             )
             await db_session.rollback()

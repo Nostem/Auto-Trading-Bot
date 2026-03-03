@@ -2,6 +2,7 @@
 Scanner — orchestrates all strategies each cycle and returns approved,
 ranked, deduplicated signals ready for execution.
 """
+
 import logging
 
 from sqlalchemy import select
@@ -17,6 +18,7 @@ from bot.strategies.weather_strategy import WeatherStrategy
 logger = logging.getLogger(__name__)
 
 MAX_SIGNALS_PER_CYCLE = 5
+ROUND_TRIP_FEE_PER_CONTRACT = 0.14
 
 
 class Scanner:
@@ -86,41 +88,64 @@ class Scanner:
         # --- Step 5: Run enabled strategies ---
         all_signals: list[TradeSignal] = []
 
-        bond_enabled = await self._get_setting(db_session, "bond_strategy_enabled", "true")
+        bond_enabled = await self._get_setting(
+            db_session, "bond_strategy_enabled", "true"
+        )
         if bond_enabled.lower() == "true":
             try:
-                bond_signals = await self.bond_strategy.scan(client, open_position_tickers)
+                bond_signals = await self.bond_strategy.scan(
+                    client, open_position_tickers
+                )
                 all_signals.extend(bond_signals)
-                logger.info("Scanner: bond strategy returned %d signal(s)", len(bond_signals))
+                logger.info(
+                    "Scanner: bond strategy returned %d signal(s)", len(bond_signals)
+                )
             except Exception as exc:
                 logger.error("Scanner: bond strategy error: %s", exc)
 
-        mm_enabled = await self._get_setting(db_session, "market_making_enabled", "true")
+        mm_enabled = await self._get_setting(
+            db_session, "market_making_enabled", "true"
+        )
         if mm_enabled.lower() == "true":
             try:
                 mm_signals = await self.mm_strategy.scan(
                     client, open_orders, open_position_tickers
                 )
                 all_signals.extend(mm_signals)
-                logger.info("Scanner: market making returned %d signal(s)", len(mm_signals))
+                logger.info(
+                    "Scanner: market making returned %d signal(s)", len(mm_signals)
+                )
             except Exception as exc:
                 logger.error("Scanner: market making strategy error: %s", exc)
 
-        btc_enabled = await self._get_setting(db_session, "btc_strategy_enabled", "true")
+        btc_enabled = await self._get_setting(
+            db_session, "btc_strategy_enabled", "true"
+        )
         if btc_enabled.lower() == "true":
             try:
-                btc_signals = await self.btc_strategy.scan(client, open_position_tickers, db_session)
+                btc_signals = await self.btc_strategy.scan(
+                    client, open_position_tickers, db_session
+                )
                 all_signals.extend(btc_signals)
-                logger.info("Scanner: BTC strategy returned %d signal(s)", len(btc_signals))
+                logger.info(
+                    "Scanner: BTC strategy returned %d signal(s)", len(btc_signals)
+                )
             except Exception as exc:
                 logger.error("Scanner: BTC strategy error: %s", exc)
 
-        weather_enabled = await self._get_setting(db_session, "weather_strategy_enabled", "false")
+        weather_enabled = await self._get_setting(
+            db_session, "weather_strategy_enabled", "false"
+        )
         if weather_enabled.lower() == "true":
             try:
-                weather_signals = await self.weather_strategy.scan(client, open_position_tickers, db_session)
+                weather_signals = await self.weather_strategy.scan(
+                    client, open_position_tickers, db_session
+                )
                 all_signals.extend(weather_signals)
-                logger.info("Scanner: weather strategy returned %d signal(s)", len(weather_signals))
+                logger.info(
+                    "Scanner: weather strategy returned %d signal(s)",
+                    len(weather_signals),
+                )
             except Exception as exc:
                 logger.error("Scanner: weather strategy error: %s", exc)
 
@@ -130,10 +155,29 @@ class Scanner:
 
         # --- Step 6: Risk-check each signal ---
         approved_signals: list[TradeSignal] = []
+        raw_edge_buffer = await self._get_setting(
+            db_session, "min_expected_edge_buffer", "0.01"
+        )
+        try:
+            min_edge_buffer = max(0.0, float(raw_edge_buffer))
+        except (TypeError, ValueError):
+            min_edge_buffer = 0.01
         for signal in all_signals:
+            required_edge = ROUND_TRIP_FEE_PER_CONTRACT + min_edge_buffer
+            if signal.expected_value < required_edge:
+                logger.info(
+                    "Scanner: fee gate rejected %s %s (edge=%.4f, required=%.4f)",
+                    signal.ticker,
+                    signal.side,
+                    signal.expected_value,
+                    required_edge,
+                )
+                continue
+
             market_stub = {
                 "ticker": signal.ticker,
-                "volume": self.mm_strategy.min_volume * 2,  # assume liquidity check passed in strategy
+                "volume": self.mm_strategy.min_volume
+                * 2,  # assume liquidity check passed in strategy
                 "yes_ask": signal.entry_price,
                 "no_ask": signal.entry_price,
                 "category": "",
@@ -150,7 +194,12 @@ class Scanner:
                 signal.proposed_size = decision.recommended_size
                 approved_signals.append(signal)
             else:
-                logger.debug("Scanner: rejected %s %s — %s", signal.ticker, signal.side, decision.reason)
+                logger.debug(
+                    "Scanner: rejected %s %s — %s",
+                    signal.ticker,
+                    signal.side,
+                    decision.reason,
+                )
 
         # --- Step 7: Filter minimum edge and rank ---
         filtered = self.scorer.filter_minimum_edge(approved_signals)
@@ -159,7 +208,10 @@ class Scanner:
         top = ranked[:MAX_SIGNALS_PER_CYCLE]
         logger.info(
             "Scanner: cycle complete — %d raw, %d approved, %d ranked, %d selected",
-            len(all_signals), len(approved_signals), len(ranked), len(top),
+            len(all_signals),
+            len(approved_signals),
+            len(ranked),
+            len(top),
         )
         return top
 
@@ -170,6 +222,7 @@ class Scanner:
     @staticmethod
     async def _get_setting(db_session, key: str, default: str = "") -> str:
         from api.models import Setting
+
         result = await db_session.execute(select(Setting).where(Setting.key == key))
         setting = result.scalar_one_or_none()
         return setting.value if setting else default
@@ -178,6 +231,7 @@ class Scanner:
     async def _set_setting(db_session, key: str, value: str) -> None:
         from api.models import Setting
         from datetime import datetime, timezone
+
         result = await db_session.execute(select(Setting).where(Setting.key == key))
         setting = result.scalar_one_or_none()
         if setting:

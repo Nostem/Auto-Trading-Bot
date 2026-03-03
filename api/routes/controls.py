@@ -1,4 +1,5 @@
 """Bot control endpoints — pause/resume, settings management, and recommendations."""
+
 import uuid
 from datetime import datetime, timezone
 
@@ -17,7 +18,9 @@ router = APIRouter()
 class RiskSettingsUpdate(BaseModel):
     max_position_pct: float = Field(ge=0.05, le=0.25)
     daily_loss_limit_pct: float = Field(ge=0.01, le=0.25)
-    sizing_mode: str | None = Field(default=None, pattern=r"^(fixed_dollar|percentage)$")
+    sizing_mode: str | None = Field(
+        default=None, pattern=r"^(fixed_dollar|percentage)$"
+    )
     fixed_trade_amount: float | None = Field(default=None, ge=1, le=100)
 
 
@@ -45,7 +48,9 @@ async def resume_bot(db: AsyncSession = Depends(get_db)):
 
 
 class StrategyToggle(BaseModel):
-    key: str = Field(pattern=r"^(bond_strategy_enabled|market_making_enabled|btc_strategy_enabled|weather_strategy_enabled)$")
+    key: str = Field(
+        pattern=r"^(bond_strategy_enabled|market_making_enabled|btc_strategy_enabled|weather_strategy_enabled)$"
+    )
     enabled: bool
 
 
@@ -91,9 +96,20 @@ class DenyRequest(BaseModel):
 @router.get("/controls/recommendations")
 async def list_recommendations(
     status: str = "pending",
+    run_id: str = "active",
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Recommendation).order_by(Recommendation.created_at.desc())
+
+    if run_id != "all":
+        if run_id == "active":
+            run_result = await db.execute(
+                select(Setting).where(Setting.key == "active_run_id")
+            )
+            run_setting = run_result.scalar_one_or_none()
+            run_id = run_setting.value if run_setting else "legacy"
+        query = query.where(Recommendation.run_id == run_id)
+
     if status != "all":
         query = query.where(Recommendation.status == status)
     result = await db.execute(query)
@@ -108,6 +124,8 @@ async def list_recommendations(
             "trigger": r.trigger,
             "status": r.status,
             "denial_reason": r.denial_reason,
+            "run_id": r.run_id,
+            "strategy_version": r.strategy_version,
             "created_at": r.created_at.isoformat() if r.created_at else None,
         }
         for r in recs
@@ -131,7 +149,9 @@ async def approve_recommendation(
     if not rec:
         raise HTTPException(status_code=404, detail="Recommendation not found")
     if rec.status != "pending":
-        raise HTTPException(status_code=400, detail=f"Recommendation is already {rec.status}")
+        raise HTTPException(
+            status_code=400, detail=f"Recommendation is already {rec.status}"
+        )
 
     # Validate against guardrails
     valid, err = validate_proposed_value(rec.setting_key, rec.proposed_value)
@@ -171,7 +191,9 @@ async def deny_recommendation(
     if not rec:
         raise HTTPException(status_code=404, detail="Recommendation not found")
     if rec.status != "pending":
-        raise HTTPException(status_code=400, detail=f"Recommendation is already {rec.status}")
+        raise HTTPException(
+            status_code=400, detail=f"Recommendation is already {rec.status}"
+        )
 
     rec.status = "denied"
     rec.denial_reason = body.reason

@@ -1,4 +1,5 @@
 """Dashboard stats endpoint."""
+
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
@@ -22,9 +23,15 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
     bankroll_setting = result.scalar_one_or_none()
     bankroll = float(bankroll_setting.value) if bankroll_setting else 0.0
 
+    result = await db.execute(select(Setting).where(Setting.key == "active_run_id"))
+    run_setting = result.scalar_one_or_none()
+    active_run_id = run_setting.value if run_setting else "legacy"
+
     # Total PnL (all closed trades)
     result = await db.execute(
-        select(func.sum(Trade.net_pnl)).where(Trade.status == "closed")
+        select(func.sum(Trade.net_pnl)).where(
+            Trade.status == "closed", Trade.run_id == active_run_id
+        )
     )
     total_pnl = float(result.scalar() or 0)
 
@@ -32,6 +39,7 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(func.sum(Trade.net_pnl)).where(
             Trade.status == "closed",
+            Trade.run_id == active_run_id,
             Trade.resolved_at >= today_start,
         )
     )
@@ -39,12 +47,16 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
 
     # Win rate
     result = await db.execute(
-        select(func.count()).where(Trade.status == "closed")
+        select(func.count()).where(
+            Trade.status == "closed", Trade.run_id == active_run_id
+        )
     )
     total_trades = int(result.scalar() or 0)
 
     result = await db.execute(
-        select(func.count()).where(Trade.status == "closed", Trade.net_pnl > 0)
+        select(func.count()).where(
+            Trade.status == "closed", Trade.net_pnl > 0, Trade.run_id == active_run_id
+        )
     )
     wins = int(result.scalar() or 0)
     win_rate = (wins / total_trades * 100) if total_trades else 0.0
@@ -59,7 +71,7 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
     # Best strategy by net PnL
     result = await db.execute(
         select(Trade.strategy, func.sum(Trade.net_pnl).label("total"))
-        .where(Trade.status == "closed")
+        .where(Trade.status == "closed", Trade.run_id == active_run_id)
         .group_by(Trade.strategy)
         .order_by(func.sum(Trade.net_pnl).desc())
         .limit(1)
@@ -70,7 +82,7 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
     # Win/loss streak (last N closed trades)
     result = await db.execute(
         select(Trade.net_pnl)
-        .where(Trade.status == "closed")
+        .where(Trade.status == "closed", Trade.run_id == active_run_id)
         .order_by(Trade.resolved_at.desc())
         .limit(20)
     )
@@ -95,4 +107,5 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
         "unrealized_pnl": unrealized_pnl,
         "best_strategy": best_strategy,
         "streak": streak,
+        "run_id": active_run_id,
     }

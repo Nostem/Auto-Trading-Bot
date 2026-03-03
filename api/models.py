@@ -1,6 +1,7 @@
 """
 SQLAlchemy ORM models matching the db/schema.sql tables.
 """
+
 import uuid
 from datetime import datetime, timezone
 
@@ -39,6 +40,8 @@ class Trade(Base):
     net_pnl: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
     entry_reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    strategy_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -67,6 +70,8 @@ class Position(Base):
     entry_price: Mapped[float] = mapped_column(Numeric(6, 4), nullable=False)
     current_price: Mapped[float | None] = mapped_column(Numeric(6, 4), nullable=True)
     unrealized_pnl: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    strategy_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     opened_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -91,15 +96,15 @@ class Reflection(Base):
     what_failed: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     strategy_suggestion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    strategy_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
     )
 
-    trade: Mapped["Trade | None"] = relationship(
-        "Trade", back_populates="reflections"
-    )
+    trade: Mapped["Trade | None"] = relationship("Trade", back_populates="reflections")
 
 
 class WeeklyReflection(Base):
@@ -116,6 +121,8 @@ class WeeklyReflection(Base):
     top_strategy: Mapped[str | None] = mapped_column(String(50), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     key_learnings: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    strategy_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -134,10 +141,10 @@ class Recommendation(Base):
     proposed_value: Mapped[str] = mapped_column(Text, nullable=False)
     reasoning: Mapped[str] = mapped_column(Text, nullable=False)
     trigger: Mapped[str] = mapped_column(String(50), nullable=False)
-    status: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="pending"
-    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     denial_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    strategy_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

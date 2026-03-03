@@ -2,6 +2,7 @@
 FastAPI application — REST backend for the Kalshi Bot PWA dashboard.
 All routes require Bearer token authentication.
 """
+
 import logging
 import os
 
@@ -10,7 +11,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from api.database import engine
+from api.database import apply_runtime_migrations, engine
 from api.models import Base
 from api.routes import controls, dashboard, positions, reflections, trades
 
@@ -41,6 +42,7 @@ app.add_middleware(
 # Auth middleware
 # ---------------------------------------------------------------------------
 
+
 @app.middleware("http")
 async def bearer_auth(request: Request, call_next):
     # Skip auth for health check and CORS preflight
@@ -69,14 +71,17 @@ async def bearer_auth(request: Request, call_next):
 
     return await call_next(request)
 
+
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
+
 
 @app.on_event("startup")
 async def startup():
     """Create tables if they don't exist yet (mirrors schema.sql). Does not fail startup if DB is unreachable."""
     try:
+        await apply_runtime_migrations()
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Kalshi Bot API started — database connected")
@@ -85,6 +90,7 @@ async def startup():
             "Kalshi Bot API started but database connection failed (fix DATABASE_URL and restart): %s",
             exc,
         )
+
 
 # ---------------------------------------------------------------------------
 # Routes
@@ -101,11 +107,14 @@ app.include_router(controls.router)
 async def health():
     from api.database import async_session_factory
     from sqlalchemy import text
+
     db_ok = False
     bot_enabled = False
     try:
         async with async_session_factory() as session:
-            result = await session.execute(text("SELECT value FROM settings WHERE key='bot_enabled'"))
+            result = await session.execute(
+                text("SELECT value FROM settings WHERE key='bot_enabled'")
+            )
             row = result.scalar_one_or_none()
             bot_enabled = row == "true" if row else False
             db_ok = True

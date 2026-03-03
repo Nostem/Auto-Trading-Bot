@@ -1,10 +1,11 @@
 """AI reflection log endpoints."""
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.database import get_db
-from api.models import Reflection, WeeklyReflection
+from api.models import Reflection, Setting, WeeklyReflection
 
 router = APIRouter()
 
@@ -13,14 +14,27 @@ router = APIRouter()
 async def list_reflections(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
+    run_id: str = Query("active"),
     db: AsyncSession = Depends(get_db),
 ):
-    count_result = await db.execute(select(func.count(Reflection.id)))
+    if run_id == "active":
+        run_result = await db.execute(
+            select(Setting).where(Setting.key == "active_run_id")
+        )
+        run_setting = run_result.scalar_one_or_none()
+        run_id = run_setting.value if run_setting else "legacy"
+
+    base_query = select(Reflection)
+    if run_id != "all":
+        base_query = base_query.where(Reflection.run_id == run_id)
+
+    count_result = await db.execute(
+        select(func.count()).select_from(base_query.subquery())
+    )
     total = int(count_result.scalar() or 0)
 
     result = await db.execute(
-        select(Reflection)
-        .order_by(Reflection.created_at.desc())
+        base_query.order_by(Reflection.created_at.desc())
         .offset((page - 1) * limit)
         .limit(limit)
     )
@@ -36,6 +50,8 @@ async def list_reflections(
                 "what_failed": r.what_failed,
                 "confidence_score": r.confidence_score,
                 "strategy_suggestion": r.strategy_suggestion,
+                "run_id": r.run_id,
+                "strategy_version": r.strategy_version,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }
             for r in reflections
@@ -43,14 +59,26 @@ async def list_reflections(
         "total": total,
         "page": page,
         "pages": (total + limit - 1) // limit if total else 1,
+        "run_id": run_id,
     }
 
 
 @router.get("/reflections/weekly")
-async def list_weekly_reflections(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(WeeklyReflection).order_by(WeeklyReflection.week_start.desc())
-    )
+async def list_weekly_reflections(
+    run_id: str = Query("active"),
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(WeeklyReflection)
+    if run_id != "all":
+        if run_id == "active":
+            run_result = await db.execute(
+                select(Setting).where(Setting.key == "active_run_id")
+            )
+            run_setting = run_result.scalar_one_or_none()
+            run_id = run_setting.value if run_setting else "legacy"
+        query = query.where(WeeklyReflection.run_id == run_id)
+
+    result = await db.execute(query.order_by(WeeklyReflection.week_start.desc()))
     reports = result.scalars().all()
 
     return [
@@ -64,6 +92,8 @@ async def list_weekly_reflections(db: AsyncSession = Depends(get_db)):
             "top_strategy": r.top_strategy,
             "summary": r.summary,
             "key_learnings": r.key_learnings,
+            "run_id": r.run_id,
+            "strategy_version": r.strategy_version,
             "created_at": r.created_at.isoformat() if r.created_at else None,
         }
         for r in reports

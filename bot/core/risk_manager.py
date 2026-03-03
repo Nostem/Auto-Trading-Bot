@@ -2,6 +2,7 @@
 Risk Manager — enforces all trading safety rules.
 Every trade must be approved by RiskManager.check_trade() before execution.
 """
+
 import logging
 import os
 from dataclasses import dataclass, field
@@ -79,19 +80,32 @@ class RiskManager:
             return TradeDecision(approved=False, recommended_size=0, reason=reason)
 
         # --- Sizing mode: fixed_dollar or percentage ---
-        sizing_mode = await self._get_setting(db_session, "sizing_mode", os.getenv("SIZING_MODE", "percentage"))
-        entry_price = float(market.get("yes_ask", 0.5)) if side == "yes" else float(market.get("no_ask", 0.5))
+        sizing_mode = await self._get_setting(
+            db_session, "sizing_mode", os.getenv("SIZING_MODE", "percentage")
+        )
+        entry_price = (
+            float(market.get("yes_ask", 0.5))
+            if side == "yes"
+            else float(market.get("no_ask", 0.5))
+        )
         if entry_price <= 0:
             entry_price = 0.5
 
         if sizing_mode == "fixed_dollar":
-            fixed_amount = float(await self._get_setting(
-                db_session, "fixed_trade_amount", os.getenv("FIXED_TRADE_AMOUNT", "5")
-            ))
+            fixed_amount = float(
+                await self._get_setting(
+                    db_session,
+                    "fixed_trade_amount",
+                    os.getenv("FIXED_TRADE_AMOUNT", "5"),
+                )
+            )
             proposed_size = max(1, int(fixed_amount / entry_price))
             logger.info(
                 "Fixed-dollar sizing: $%.2f / $%.4f = %d contracts for %s",
-                fixed_amount, entry_price, proposed_size, ticker,
+                fixed_amount,
+                entry_price,
+                proposed_size,
+                ticker,
             )
 
         # --- Rule 3: Max single position size (always enforced) ---
@@ -101,12 +115,16 @@ class RiskManager:
             proposed_size = max(1, int(max_allowed_size / entry_price))
             logger.info(
                 "Clamped %s size to %d contracts (max position $%.2f)",
-                ticker, proposed_size, max_allowed_size,
+                ticker,
+                proposed_size,
+                max_allowed_size,
             )
 
         # --- Rule 4: Correlation limit (same category, last 48h) ---
         category = market.get("category", "")
-        recent_category_count = self._count_recent_category_positions(open_positions, category)
+        recent_category_count = self._count_recent_category_positions(
+            open_positions, category
+        )
         if recent_category_count >= self.max_category_positions:
             reason = (
                 f"Rejected {ticker}: already {recent_category_count} positions "
@@ -159,7 +177,11 @@ class RiskManager:
         contracts = int(kelly_amount / market_price)
         logger.debug(
             "Kelly sizing: p=%.3f, market=%.3f, b=%.3f → f=%.3f → %d contracts",
-            our_probability, market_price, b, kelly_fraction, contracts,
+            our_probability,
+            market_price,
+            b,
+            kelly_fraction,
+            contracts,
         )
         return max(1, contracts)
 
@@ -179,16 +201,22 @@ class RiskManager:
             select(Setting).where(Setting.key == "current_bankroll")
         )
         setting = result.scalar_one_or_none()
-        bankroll = float(setting.value) if setting else float(os.getenv("INITIAL_BANKROLL", "5000"))
+        bankroll = (
+            float(setting.value)
+            if setting
+            else float(os.getenv("INITIAL_BANKROLL", "5000"))
+        )
 
         # Get today's resolved PnL
         today_start = datetime.now(timezone.utc).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
+        active_run_id = await self._get_setting(db_session, "active_run_id", "legacy")
         result = await db_session.execute(
             select(func.sum(Trade.net_pnl)).where(
                 Trade.resolved_at >= today_start,
                 Trade.status == "closed",
+                Trade.run_id == active_run_id,
             )
         )
         today_pnl = float(result.scalar() or 0)
@@ -200,7 +228,10 @@ class RiskManager:
         if today_pnl <= -loss_limit:
             logger.critical(
                 "Daily loss limit hit: today_pnl=$%.2f, limit=-$%.2f (%.0f%% of bankroll=$%.2f)",
-                today_pnl, loss_limit, daily_loss_pct * 100, bankroll,
+                today_pnl,
+                loss_limit,
+                daily_loss_pct * 100,
+                bankroll,
             )
             return True
 
@@ -208,7 +239,8 @@ class RiskManager:
         if remaining < loss_limit * 0.25:
             logger.warning(
                 "Approaching daily loss limit: today_pnl=$%.2f, only $%.2f remaining",
-                today_pnl, remaining,
+                today_pnl,
+                remaining,
             )
 
         return False
@@ -224,6 +256,7 @@ class RiskManager:
             return default
         try:
             from sqlalchemy import text
+
             result = await db_session.execute(
                 text("SELECT value FROM settings WHERE key = :k"),
                 {"k": key},
@@ -233,9 +266,13 @@ class RiskManager:
         except Exception:
             return default
 
-    def get_max_position_size(self, bankroll: float, max_pct_override: float | None = None) -> float:
+    def get_max_position_size(
+        self, bankroll: float, max_pct_override: float | None = None
+    ) -> float:
         """Return max dollar amount for a single position."""
-        pct = max_pct_override if max_pct_override is not None else self.max_position_pct
+        pct = (
+            max_pct_override if max_pct_override is not None else self.max_position_pct
+        )
         return bankroll * min(pct, 0.25)
 
     def _calculate_total_exposure(self, open_positions: list, bankroll: float) -> float:
@@ -254,14 +291,18 @@ class RiskManager:
         """Count positions in the same category opened within the last 48 hours."""
         if not category:
             return 0
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=self.category_window_hours)
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            hours=self.category_window_hours
+        )
         count = 0
         for pos in open_positions:
             if pos.get("category") == category:
                 opened_at = pos.get("opened_at")
                 if opened_at:
                     if isinstance(opened_at, str):
-                        opened_at = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
+                        opened_at = datetime.fromisoformat(
+                            opened_at.replace("Z", "+00:00")
+                        )
                     if opened_at >= cutoff:
                         count += 1
         return count

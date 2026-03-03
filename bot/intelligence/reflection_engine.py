@@ -3,6 +3,7 @@ Reflection Engine — uses an LLM (Claude or MiniMax Coding Plan) to generate
 trade post-mortems and weekly summary reports. Runs non-blocking; never delays
 trade execution.
 """
+
 import json
 import logging
 import os
@@ -151,6 +152,8 @@ class ReflectionEngine:
             what_failed=data.get("what_failed"),
             confidence_score=int(data.get("confidence_score", 5)),
             strategy_suggestion=data.get("strategy_suggestion"),
+            run_id=trade.get("run_id") or "legacy",
+            strategy_version=trade.get("strategy_version") or "v1",
         )
         db_session.add(reflection)
 
@@ -181,18 +184,24 @@ class ReflectionEngine:
         week_start_dt = datetime(
             week_start.year, week_start.month, week_start.day, tzinfo=timezone.utc
         )
+        active_run_id, active_strategy_version = await self._get_active_run_context(
+            db_session
+        )
 
         # Fetch week's closed trades
         result = await db_session.execute(
             select(Trade).where(
                 Trade.resolved_at >= week_start_dt,
                 Trade.status == "closed",
+                Trade.run_id == active_run_id,
             )
         )
         trades = result.scalars().all()
 
         if not trades:
-            logger.info("ReflectionEngine: no trades this week — skipping weekly report")
+            logger.info(
+                "ReflectionEngine: no trades this week — skipping weekly report"
+            )
             return
 
         total_trades = len(trades)
@@ -203,8 +212,14 @@ class ReflectionEngine:
         # Best strategy by net PnL
         strategy_pnl: dict[str, float] = {}
         for t in trades:
-            strategy_pnl[t.strategy] = strategy_pnl.get(t.strategy, 0.0) + float(t.net_pnl or 0)
-        top_strategy = max(strategy_pnl, key=strategy_pnl.get) if strategy_pnl else "none"
+            strategy_pnl[t.strategy] = strategy_pnl.get(t.strategy, 0.0) + float(
+                t.net_pnl or 0
+            )
+        top_strategy = (
+            max(strategy_pnl.items(), key=lambda item: item[1])[0]
+            if strategy_pnl
+            else "none"
+        )
 
         # Fetch recent reflections for context
         learnings = await self.get_recent_learnings(db_session, limit=10)
@@ -247,13 +262,17 @@ Return JSON: {{"summary": "3-4 sentence overview", "key_learnings": "2-3 bullet 
             top_strategy=top_strategy,
             summary=data.get("summary", ""),
             key_learnings=data.get("key_learnings", ""),
+            run_id=active_run_id,
+            strategy_version=active_strategy_version,
         )
         db_session.add(report)
 
         try:
             await db_session.commit()
             logger.info(
-                "ReflectionEngine: weekly report saved for %s – %s", week_start, week_end
+                "ReflectionEngine: weekly report saved for %s – %s",
+                week_start,
+                week_end,
             )
         except Exception as exc:
             logger.error("ReflectionEngine: DB error saving weekly report: %s", exc)
@@ -274,8 +293,10 @@ Return JSON: {{"summary": "3-4 sentence overview", "key_learnings": "2-3 bullet 
         """Return the N most recent reflection summaries as a formatted string."""
         from api.models import Reflection
 
+        active_run_id, _ = await self._get_active_run_context(db_session)
         result = await db_session.execute(
             select(Reflection)
+            .where(Reflection.run_id == active_run_id)
             .order_by(Reflection.created_at.desc())
             .limit(limit)
         )
@@ -302,32 +323,44 @@ Return JSON: {{"summary": "3-4 sentence overview", "key_learnings": "2-3 bullet 
         """
         from api.models import Trade, Reflection, Recommendation, Setting
 
-        logger.info("ReflectionEngine: generating recommendations (trigger=%s)", trigger)
+        logger.info(
+            "ReflectionEngine: generating recommendations (trigger=%s)", trigger
+        )
 
         try:
             # Gather last 20 closed trades
+            active_run_id, active_strategy_version = await self._get_active_run_context(
+                db_session
+            )
             result = await db_session.execute(
                 select(Trade)
                 .where(Trade.status == "closed")
+                .where(Trade.run_id == active_run_id)
                 .order_by(Trade.resolved_at.desc())
                 .limit(20)
             )
             recent_trades = result.scalars().all()
 
             if not recent_trades:
-                logger.info("ReflectionEngine: no closed trades — skipping recommendations")
+                logger.info(
+                    "ReflectionEngine: no closed trades — skipping recommendations"
+                )
                 return
 
             trades_summary = []
             for t in recent_trades:
-                trades_summary.append({
-                    "strategy": t.strategy,
-                    "side": t.side,
-                    "entry_price": float(t.entry_price),
-                    "exit_price": float(t.exit_price) if t.exit_price else None,
-                    "net_pnl": float(t.net_pnl) if t.net_pnl else 0,
-                    "resolved_at": t.resolved_at.isoformat() if t.resolved_at else None,
-                })
+                trades_summary.append(
+                    {
+                        "strategy": t.strategy,
+                        "side": t.side,
+                        "entry_price": float(t.entry_price),
+                        "exit_price": float(t.exit_price) if t.exit_price else None,
+                        "net_pnl": float(t.net_pnl) if t.net_pnl else 0,
+                        "resolved_at": t.resolved_at.isoformat()
+                        if t.resolved_at
+                        else None,
+                    }
+                )
 
             # Recent reflections
             learnings = await self.get_recent_learnings(db_session, limit=10)
@@ -339,12 +372,15 @@ Return JSON: {{"summary": "3-4 sentence overview", "key_learnings": "2-3 bullet 
                     select(Setting).where(Setting.key == key)
                 )
                 setting = result.scalar_one_or_none()
-                current_params[key] = setting.value if setting else str(TUNABLE_PARAMS[key]["default"])
+                current_params[key] = (
+                    setting.value if setting else str(TUNABLE_PARAMS[key]["default"])
+                )
 
             # Last 5 denied recommendations with user's reasoning
             result = await db_session.execute(
                 select(Recommendation)
                 .where(Recommendation.status == "denied")
+                .where(Recommendation.run_id == active_run_id)
                 .order_by(Recommendation.resolved_at.desc())
                 .limit(5)
             )
@@ -414,7 +450,12 @@ Return an empty array [] if no changes are warranted."""
             # Validate against guardrails
             valid, err = validate_proposed_value(key, proposed)
             if not valid:
-                logger.info("ReflectionEngine: skipping invalid recommendation %s=%s: %s", key, proposed, err)
+                logger.info(
+                    "ReflectionEngine: skipping invalid recommendation %s=%s: %s",
+                    key,
+                    proposed,
+                    err,
+                )
                 continue
 
             # Skip no-ops (proposed == current)
@@ -428,11 +469,15 @@ Return an empty array [] if no changes are warranted."""
                     and_(
                         Recommendation.setting_key == key,
                         Recommendation.status == "pending",
+                        Recommendation.run_id == active_run_id,
                     )
                 )
             )
             if result.scalar_one_or_none():
-                logger.info("ReflectionEngine: skipping %s — pending recommendation already exists", key)
+                logger.info(
+                    "ReflectionEngine: skipping %s — pending recommendation already exists",
+                    key,
+                )
                 continue
 
             recommendation = Recommendation(
@@ -441,6 +486,8 @@ Return an empty array [] if no changes are warranted."""
                 proposed_value=str(proposed),
                 reasoning=reasoning,
                 trigger=trigger,
+                run_id=active_run_id,
+                strategy_version=active_strategy_version,
             )
             db_session.add(recommendation)
             written += 1
@@ -448,9 +495,15 @@ Return an empty array [] if no changes are warranted."""
         if written:
             try:
                 await db_session.commit()
-                logger.info("ReflectionEngine: wrote %d recommendation(s) (trigger=%s)", written, trigger)
+                logger.info(
+                    "ReflectionEngine: wrote %d recommendation(s) (trigger=%s)",
+                    written,
+                    trigger,
+                )
             except Exception as exc:
-                logger.error("ReflectionEngine: DB error saving recommendations: %s", exc)
+                logger.error(
+                    "ReflectionEngine: DB error saving recommendations: %s", exc
+                )
                 await db_session.rollback()
 
     # -------------------------------------------------------------------------
@@ -469,7 +522,9 @@ Return an empty array [] if no changes are warranted."""
             result = json.loads(raw.strip())
             return result if isinstance(result, list) else []
         except json.JSONDecodeError as exc:
-            logger.warning("ReflectionEngine: JSON array parse error: %s — raw: %s", exc, raw[:200])
+            logger.warning(
+                "ReflectionEngine: JSON array parse error: %s — raw: %s", exc, raw[:200]
+            )
             return []
 
     @staticmethod
@@ -483,7 +538,9 @@ Return an empty array [] if no changes are warranted."""
         try:
             return json.loads(raw.strip())
         except json.JSONDecodeError as exc:
-            logger.warning("ReflectionEngine: JSON parse error: %s — raw: %s", exc, raw[:200])
+            logger.warning(
+                "ReflectionEngine: JSON parse error: %s — raw: %s", exc, raw[:200]
+            )
             return {}
 
     @staticmethod
@@ -492,9 +549,27 @@ Return an empty array [] if no changes are warranted."""
         if not start_iso or not end_iso:
             return 0.0
         try:
+
             def parse(s):
                 s = s.replace("Z", "+00:00")
                 return datetime.fromisoformat(s)
+
             return (parse(end_iso) - parse(start_iso)).total_seconds() / 3600.0
         except Exception:
             return 0.0
+
+    @staticmethod
+    async def _get_active_run_context(db_session) -> tuple[str, str]:
+        from api.models import Setting
+
+        result = await db_session.execute(
+            select(Setting).where(Setting.key == "active_run_id")
+        )
+        run_setting = result.scalar_one_or_none()
+        result = await db_session.execute(
+            select(Setting).where(Setting.key == "active_strategy_version")
+        )
+        version_setting = result.scalar_one_or_none()
+        run_id = run_setting.value if run_setting else "legacy"
+        strategy_version = version_setting.value if version_setting else "v1"
+        return run_id, strategy_version

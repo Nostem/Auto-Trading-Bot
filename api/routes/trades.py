@@ -1,4 +1,5 @@
 """Trade history endpoints."""
+
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -7,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from api.database import get_db
-from api.models import Reflection, Trade
+from api.models import Reflection, Setting, Trade
 
 router = APIRouter()
 
@@ -27,6 +28,8 @@ def _trade_to_dict(trade: Trade, reflection=None) -> dict:
         "net_pnl": float(trade.net_pnl) if trade.net_pnl is not None else None,
         "status": trade.status,
         "entry_reasoning": trade.entry_reasoning,
+        "run_id": trade.run_id,
+        "strategy_version": trade.strategy_version,
         "created_at": trade.created_at.isoformat() if trade.created_at else None,
         "resolved_at": trade.resolved_at.isoformat() if trade.resolved_at else None,
     }
@@ -47,9 +50,19 @@ async def list_trades(
     limit: int = Query(20, ge=1, le=100),
     strategy: str = Query("all"),
     status: str = Query("all"),
+    run_id: str = Query("active"),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Trade)
+
+    if run_id != "all":
+        if run_id == "active":
+            run_result = await db.execute(
+                select(Setting).where(Setting.key == "active_run_id")
+            )
+            run_setting = run_result.scalar_one_or_none()
+            run_id = run_setting.value if run_setting else "legacy"
+        query = query.where(Trade.run_id == run_id)
 
     if strategy != "all":
         query = query.where(Trade.strategy == strategy)
@@ -73,6 +86,7 @@ async def list_trades(
         "total": total,
         "page": page,
         "pages": (total + limit - 1) // limit if total else 1,
+        "run_id": run_id,
     }
 
 
@@ -83,9 +97,7 @@ async def get_trade(trade_id: str, db: AsyncSession = Depends(get_db)):
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid trade ID")
 
-    result = await db.execute(
-        select(Trade).where(Trade.id == tid)
-    )
+    result = await db.execute(select(Trade).where(Trade.id == tid))
     trade = result.scalar_one_or_none()
     if not trade:
         raise HTTPException(status_code=404, detail="Trade not found")

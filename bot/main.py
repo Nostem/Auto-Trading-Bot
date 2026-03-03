@@ -2,6 +2,7 @@
 Bot main entry point — wires all components together, starts APScheduler,
 and runs the event loop. This is what Railway executes.
 """
+
 import asyncio
 import logging
 import os
@@ -32,7 +33,7 @@ logger = logging.getLogger("bot.main")
 
 from sqlalchemy import select
 
-from api.database import async_session_factory, engine
+from api.database import apply_runtime_migrations, async_session_factory, engine
 from api.models import Base
 from bot.core.executor import Executor
 from bot.core.kalshi_client import KalshiClient
@@ -57,6 +58,7 @@ _scheduler = AsyncIOScheduler(timezone="UTC")
 # LLM connectivity test
 # ---------------------------------------------------------------------------
 
+
 async def _test_llm_connection() -> None:
     """
     Test LLM connectivity at startup and log clear pass/fail status.
@@ -72,7 +74,9 @@ async def _test_llm_connection() -> None:
         base_url = "https://api.minimaxi.com/anthropic"
         client = anth.AsyncAnthropic(api_key=minimax_key, base_url=base_url)
         model = "minimax-m2.5-highspeed"
-        logger.info("LLM: using MiniMax Coding Plan (base_url=%s, model=%s)", base_url, model)
+        logger.info(
+            "LLM: using MiniMax Coding Plan (base_url=%s, model=%s)", base_url, model
+        )
     elif anthropic_key:
         provider = "Anthropic"
         client = anth.AsyncAnthropic(api_key=anthropic_key)
@@ -91,9 +95,7 @@ async def _test_llm_connection() -> None:
             max_tokens=10,
             messages=[{"role": "user", "content": "Reply with OK"}],
         )
-        first_text = next(
-            (b.text for b in response.content if hasattr(b, "text")), ""
-        )
+        first_text = next((b.text for b in response.content if hasattr(b, "text")), "")
         logger.info("LLM: %s connected OK — response: %r", provider, first_text[:30])
     except Exception as exc:
         status_code = getattr(exc, "status_code", None)
@@ -114,13 +116,16 @@ async def _test_llm_connection() -> None:
             logger.warning(
                 "LLM: %s connection failed (%s). "
                 "Reflections will use fallback text. Error: %s",
-                provider, status_code, exc,
+                provider,
+                status_code,
+                exc,
             )
 
 
 # ---------------------------------------------------------------------------
 # Scheduled jobs
 # ---------------------------------------------------------------------------
+
 
 async def scan_and_trade():
     """Run every 60 seconds: scan for signals and execute approved ones."""
@@ -135,16 +140,25 @@ async def scan_and_trade():
     async with async_session_factory() as session:
         # Re-check bot_enabled from DB settings
         from sqlalchemy import select, text
-        result = await session.execute(text("SELECT value FROM settings WHERE key='bot_enabled'"))
+
+        result = await session.execute(
+            text("SELECT value FROM settings WHERE key='bot_enabled'")
+        )
         row = result.scalar_one_or_none()
         if row != "true":
             logger.info("scan_and_trade: bot is paused (DB setting) — skipping cycle")
             return
 
         # Get current bankroll
-        result = await session.execute(text("SELECT value FROM settings WHERE key='current_bankroll'"))
+        result = await session.execute(
+            text("SELECT value FROM settings WHERE key='current_bankroll'")
+        )
         bankroll_row = result.scalar_one_or_none()
-        bankroll = float(bankroll_row) if bankroll_row else float(os.getenv("INITIAL_BANKROLL", "5000"))
+        bankroll = (
+            float(bankroll_row)
+            if bankroll_row
+            else float(os.getenv("INITIAL_BANKROLL", "5000"))
+        )
 
     async with async_session_factory() as session:
         try:
@@ -157,15 +171,20 @@ async def scan_and_trade():
     for signal in signals:
         async with async_session_factory() as session:
             try:
-                success = await _executor.execute_signal(signal, _kalshi_client, session)
+                success = await _executor.execute_signal(
+                    signal, _kalshi_client, session
+                )
                 if success:
                     executed += 1
             except Exception as exc:
-                logger.error("scan_and_trade: executor error on %s: %s", signal.ticker, exc)
+                logger.error(
+                    "scan_and_trade: executor error on %s: %s", signal.ticker, exc
+                )
 
     logger.info(
         "scan_and_trade: cycle complete — %d signal(s) found, %d executed",
-        len(signals), executed,
+        len(signals),
+        executed,
     )
 
 
@@ -191,12 +210,14 @@ async def _reflect_on_trade(trade_dict: dict):
     is_loss = float(trade_dict.get("net_pnl", 0)) < 0
 
     if is_loss:
+        run_id = trade_dict.get("run_id", "legacy")
         # Check if we now have 3 consecutive losses — if so, reflect on all 3
         async with async_session_factory() as session:
             from api.models import Trade
+
             result = await session.execute(
                 select(Trade)
-                .where(Trade.status == "closed")
+                .where(Trade.status == "closed", Trade.run_id == run_id)
                 .order_by(Trade.resolved_at.desc())
                 .limit(3)
             )
@@ -205,7 +226,9 @@ async def _reflect_on_trade(trade_dict: dict):
                 # Reflect on the most recent trade as representative of the streak
                 try:
                     await _reflection_engine.reflect_on_trade(trade_dict, session)
-                    logger.info("_reflect_on_trade: 3 consecutive losses — reflection generated")
+                    logger.info(
+                        "_reflect_on_trade: 3 consecutive losses — reflection generated"
+                    )
                 except Exception as exc:
                     logger.error("_reflect_on_trade: error: %s", exc)
 
@@ -219,13 +242,19 @@ async def _reflect_on_trade(trade_dict: dict):
 
 async def _check_loss_triggers(db_session):
     """Check for consecutive/cumulative loss triggers and generate recommendations."""
-    from api.models import Trade, Recommendation
+    from api.models import Recommendation, Setting, Trade
     from sqlalchemy import select, func, and_
+
+    result = await db_session.execute(
+        select(Setting).where(Setting.key == "active_run_id")
+    )
+    run_setting = result.scalar_one_or_none()
+    active_run_id = run_setting.value if run_setting else "legacy"
 
     # --- 3 consecutive losses ---
     result = await db_session.execute(
         select(Trade)
-        .where(Trade.status == "closed")
+        .where(Trade.status == "closed", Trade.run_id == active_run_id)
         .order_by(Trade.resolved_at.desc())
         .limit(3)
     )
@@ -239,19 +268,30 @@ async def _check_loss_triggers(db_session):
                 select(Recommendation).where(
                     and_(
                         Recommendation.trigger == "consecutive_losses",
+                        Recommendation.run_id == active_run_id,
                         Recommendation.created_at >= third_resolved,
                     )
                 )
             )
             if not result.scalar_one_or_none():
-                logger.info("_check_loss_triggers: 3 consecutive losses detected — generating recommendations")
-                await _reflection_engine.generate_recommendations(db_session, trigger="consecutive_losses")
+                logger.info(
+                    "_check_loss_triggers: 3 consecutive losses detected — generating recommendations"
+                )
+                await _reflection_engine.generate_recommendations(
+                    db_session, trigger="consecutive_losses"
+                )
                 return  # Don't also fire cumulative in the same callback
 
     # --- Every 10 cumulative losses ---
     result = await db_session.execute(
-        select(func.count()).select_from(Trade).where(
-            and_(Trade.status == "closed", Trade.net_pnl < 0)
+        select(func.count())
+        .select_from(Trade)
+        .where(
+            and_(
+                Trade.status == "closed",
+                Trade.net_pnl < 0,
+                Trade.run_id == active_run_id,
+            )
         )
     )
     total_losses = result.scalar() or 0
@@ -259,8 +299,13 @@ async def _check_loss_triggers(db_session):
     if total_losses > 0 and total_losses % 10 == 0:
         # Check how many cumulative_losses recommendations already exist
         result = await db_session.execute(
-            select(func.count()).select_from(Recommendation).where(
-                Recommendation.trigger == "cumulative_losses"
+            select(func.count())
+            .select_from(Recommendation)
+            .where(
+                and_(
+                    Recommendation.trigger == "cumulative_losses",
+                    Recommendation.run_id == active_run_id,
+                )
             )
         )
         existing_cumulative = result.scalar() or 0
@@ -271,7 +316,9 @@ async def _check_loss_triggers(db_session):
                 "_check_loss_triggers: %d cumulative losses — generating recommendations",
                 total_losses,
             )
-            await _reflection_engine.generate_recommendations(db_session, trigger="cumulative_losses")
+            await _reflection_engine.generate_recommendations(
+                db_session, trigger="cumulative_losses"
+            )
 
 
 async def expire_stale_recommendations():
@@ -301,7 +348,10 @@ async def expire_stale_recommendations():
 
         try:
             await session.commit()
-            logger.info("expire_stale_recommendations: expired %d stale recommendation(s)", len(stale))
+            logger.info(
+                "expire_stale_recommendations: expired %d stale recommendation(s)",
+                len(stale),
+            )
         except Exception as exc:
             logger.error("expire_stale_recommendations: DB error: %s", exc)
             await session.rollback()
@@ -315,7 +365,9 @@ async def git_backup():
     try:
         result = subprocess.run(
             ["git", "status", "--porcelain"],
-            capture_output=True, text=True, cwd=project_root,
+            capture_output=True,
+            text=True,
+            cwd=project_root,
         )
         if not result.stdout.strip():
             logger.debug("git_backup: no changes to commit")
@@ -345,6 +397,7 @@ async def daily_reflection():
 # Startup and shutdown
 # ---------------------------------------------------------------------------
 
+
 async def startup():
     """Initialize database, connect Kalshi client, start scheduler."""
     global _kalshi_client
@@ -352,6 +405,7 @@ async def startup():
     logger.info("Kalshi Bot starting up…")
 
     # Ensure DB tables exist
+    await apply_runtime_migrations()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database schema verified")
@@ -367,11 +421,13 @@ async def startup():
     # Validate enabled strategies from settings
     async with async_session_factory() as session:
         from sqlalchemy import text
+
         result = await session.execute(text("SELECT key, value FROM settings"))
         settings = {row[0]: row[1] for row in result.fetchall()}
 
     active_strategies = [
-        name for name, key in [
+        name
+        for name, key in [
             ("Bond", "bond_strategy_enabled"),
             ("Market Making", "market_making_enabled"),
             ("BTC 15-Min", "btc_strategy_enabled"),
@@ -382,11 +438,25 @@ async def startup():
     logger.info("Strategies active: %s", ", ".join(active_strategies) or "NONE")
 
     # Schedule jobs
-    _scheduler.add_job(scan_and_trade, "interval", seconds=60, id="scan_and_trade", max_instances=1)
-    _scheduler.add_job(monitor_positions, "interval", seconds=30, id="monitor_positions", max_instances=1)
-    _scheduler.add_job(daily_reflection, "cron", hour=0, minute=5, id="daily_reflection")
-    _scheduler.add_job(expire_stale_recommendations, "cron", hour=0, minute=10, id="expire_stale_recs")
-    _scheduler.add_job(git_backup, "interval", hours=6, id="git_backup", max_instances=1)
+    _scheduler.add_job(
+        scan_and_trade, "interval", seconds=60, id="scan_and_trade", max_instances=1
+    )
+    _scheduler.add_job(
+        monitor_positions,
+        "interval",
+        seconds=30,
+        id="monitor_positions",
+        max_instances=1,
+    )
+    _scheduler.add_job(
+        daily_reflection, "cron", hour=0, minute=5, id="daily_reflection"
+    )
+    _scheduler.add_job(
+        expire_stale_recommendations, "cron", hour=0, minute=10, id="expire_stale_recs"
+    )
+    _scheduler.add_job(
+        git_backup, "interval", hours=6, id="git_backup", max_instances=1
+    )
     _scheduler.start()
     logger.info("APScheduler started")
 
@@ -412,9 +482,15 @@ async def shutdown():
                 try:
                     await _kalshi_client.cancel_order(order["order_id"])
                 except Exception as exc:
-                    logger.warning("Shutdown: failed to cancel order %s: %s", order.get("order_id"), exc)
+                    logger.warning(
+                        "Shutdown: failed to cancel order %s: %s",
+                        order.get("order_id"),
+                        exc,
+                    )
             if mm_orders:
-                logger.info("Shutdown: cancelled %d market making order(s)", len(mm_orders))
+                logger.info(
+                    "Shutdown: cancelled %d market making order(s)", len(mm_orders)
+                )
         except Exception as exc:
             logger.error("Shutdown: error cancelling orders: %s", exc)
 
@@ -426,6 +502,7 @@ async def shutdown():
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 async def main():
     await startup()
