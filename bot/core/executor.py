@@ -46,6 +46,14 @@ class Executor:
         return setting.value if setting else default
 
     @staticmethod
+    async def _get_float_setting(db_session, key: str, default: float) -> float:
+        raw = await Executor._get_setting(db_session, key, str(default))
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
     async def _get_param(db_session, key: str) -> float | int:
         """Read a tunable parameter from the settings table, with guardrail default fallback."""
         from api.models import Setting
@@ -98,16 +106,47 @@ class Executor:
         except (TypeError, ValueError):
             min_edge_buffer = 0.01
 
-        required_edge = (KALSHI_FEE_PER_CONTRACT * 2) + min_edge_buffer
-        if signal.expected_value < required_edge:
-            logger.info(
-                "Executor: fee gate rejected %s %s (edge=%.4f, required=%.4f)",
-                signal.ticker,
-                signal.side,
-                signal.expected_value,
-                required_edge,
+        if signal.strategy == "market_making":
+            mm_min_capture = await self._get_float_setting(
+                db_session, "market_making_min_spread_capture", 0.01
             )
-            return False
+            observed_capture = max(0.0, float(signal.expected_return_pct or 0.0))
+            if observed_capture < mm_min_capture:
+                logger.info(
+                    "Executor: mm gate rejected %s %s (capture=%.4f, required=%.4f)",
+                    signal.ticker,
+                    signal.side,
+                    observed_capture,
+                    mm_min_capture,
+                )
+                return False
+        else:
+            if signal.strategy == "weather":
+                strategy_min_edge = await self._get_float_setting(
+                    db_session, "weather_min_edge_after_fees", 0.03
+                )
+            elif signal.strategy == "bond":
+                strategy_min_edge = await self._get_float_setting(
+                    db_session, "bond_min_edge_after_fees", 0.01
+                )
+            elif signal.strategy == "btc_15min":
+                strategy_min_edge = await self._get_float_setting(
+                    db_session, "btc_min_edge_after_fees", 0.02
+                )
+            else:
+                strategy_min_edge = 0.02
+
+            required_edge = strategy_min_edge + min_edge_buffer
+            if signal.expected_value < required_edge:
+                logger.info(
+                    "Executor: edge gate rejected %s %s (%s edge=%.4f, required=%.4f)",
+                    signal.ticker,
+                    signal.side,
+                    signal.strategy,
+                    signal.expected_value,
+                    required_edge,
+                )
+                return False
 
         active_run_id = await self._get_setting(db_session, "active_run_id", "legacy")
         strategy_version = await self._get_setting(
