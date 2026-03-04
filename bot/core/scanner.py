@@ -23,7 +23,6 @@ from bot.strategies.weather_strategy import WeatherStrategy
 logger = logging.getLogger(__name__)
 
 MAX_SIGNALS_PER_CYCLE = 5
-ROUND_TRIP_FEE_PER_CONTRACT = 0.14
 
 
 class Scanner:
@@ -192,17 +191,54 @@ class Scanner:
             min_edge_buffer = max(0.0, float(raw_edge_buffer))
         except (TypeError, ValueError):
             min_edge_buffer = 0.01
+
+        weather_min_edge = await self._get_float_setting(
+            db_session, "weather_min_edge_after_fees", 0.03
+        )
+        bond_min_edge = await self._get_float_setting(
+            db_session, "bond_min_edge_after_fees", 0.01
+        )
+        btc_min_edge = await self._get_float_setting(
+            db_session, "btc_min_edge_after_fees", 0.02
+        )
+        mm_min_capture = await self._get_float_setting(
+            db_session, "market_making_min_spread_capture", 0.01
+        )
+
         for signal in all_signals:
-            required_edge = ROUND_TRIP_FEE_PER_CONTRACT + min_edge_buffer
-            if signal.expected_value < required_edge:
-                logger.info(
-                    "Scanner: fee gate rejected %s %s (edge=%.4f, required=%.4f)",
-                    signal.ticker,
-                    signal.side,
-                    signal.expected_value,
-                    required_edge,
-                )
-                continue
+            if signal.strategy == "market_making":
+                observed_capture = max(0.0, float(signal.expected_return_pct or 0.0))
+                required_capture = mm_min_capture
+                if observed_capture < required_capture:
+                    logger.info(
+                        "Scanner: mm gate rejected %s %s (capture=%.4f, required=%.4f)",
+                        signal.ticker,
+                        signal.side,
+                        observed_capture,
+                        required_capture,
+                    )
+                    continue
+            else:
+                if signal.strategy == "weather":
+                    strategy_min_edge = weather_min_edge
+                elif signal.strategy == "bond":
+                    strategy_min_edge = bond_min_edge
+                elif signal.strategy == "btc_15min":
+                    strategy_min_edge = btc_min_edge
+                else:
+                    strategy_min_edge = 0.02
+
+                required_edge = strategy_min_edge + min_edge_buffer
+                if signal.expected_value < required_edge:
+                    logger.info(
+                        "Scanner: edge gate rejected %s %s (%s edge=%.4f, required=%.4f)",
+                        signal.ticker,
+                        signal.side,
+                        signal.strategy,
+                        signal.expected_value,
+                        required_edge,
+                    )
+                    continue
 
             market_stub = {
                 "ticker": signal.ticker,
@@ -256,6 +292,14 @@ class Scanner:
         result = await db_session.execute(select(Setting).where(Setting.key == key))
         setting = result.scalar_one_or_none()
         return setting.value if setting else default
+
+    @staticmethod
+    async def _get_float_setting(db_session, key: str, default: float) -> float:
+        raw = await Scanner._get_setting(db_session, key, str(default))
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return default
 
     @staticmethod
     async def _set_setting(db_session, key: str, value: str) -> None:

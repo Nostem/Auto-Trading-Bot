@@ -7,6 +7,7 @@ Weather forecasts are well-calibrated (~3-4 deg F error for 24h forecasts),
 making the probability model more reliable than the BTC volatility model.
 Targets markets resolving within 36 hours where forecast confidence is high.
 """
+
 import logging
 import math
 import os
@@ -23,15 +24,15 @@ from bot.intelligence.signal_scorer import TradeSignal
 logger = logging.getLogger(__name__)
 
 # --- Config defaults (overridable via env) ---
-_WEATHER_MIN_EDGE = 0.04       # 4% minimum edge
-_WEATHER_MAX_HOURS = 36.0      # trade markets closing within 36 hours
-_WEATHER_MIN_HOURS = 0.5       # skip markets closing in < 30 minutes
-_WEATHER_CONFIDENCE = 0.70     # higher than BTC — forecasts are well-calibrated
-_FORECAST_STD_24H = 3.5        # deg F forecast std dev at 24h
-_FORECAST_STD_48H = 5.0        # deg F forecast std dev at 48h
-_YES_MIN_ENTRY = 0.70          # YES trades must be >= 70 cents
-_NO_MIN_ENTRY = 0.25           # NO trades must be >= 25 cents
-_MIN_VOLUME = 5000             # $5k minimum market volume
+_WEATHER_MIN_EDGE = 0.04  # 4% minimum edge
+_WEATHER_MAX_HOURS = 36.0  # trade markets closing within 36 hours
+_WEATHER_MIN_HOURS = 0.5  # skip markets closing in < 30 minutes
+_WEATHER_CONFIDENCE = 0.70  # higher than BTC — forecasts are well-calibrated
+_FORECAST_STD_24H = 3.5  # deg F forecast std dev at 24h
+_FORECAST_STD_48H = 5.0  # deg F forecast std dev at 48h
+_YES_MIN_ENTRY = 0.70  # YES trades must be >= 70 cents
+_NO_MIN_ENTRY = 0.25  # NO trades must be >= 25 cents
+_MIN_VOLUME = 5000  # $5k minimum market volume
 
 _NOAA_USER_AGENT = "(KalshiWeatherBot, contact@example.com)"
 
@@ -39,20 +40,20 @@ _NOAA_USER_AGENT = "(KalshiWeatherBot, contact@example.com)"
 # Format: (office, grid_x, grid_y)
 # Look up at: https://api.weather.gov/points/{lat},{lon}
 CITY_GRID_POINTS: dict[str, tuple[str, int, int]] = {
-    "NYC":  ("OKX", 33, 37),
-    "CHI":  ("LOT", 76, 73),
-    "MIA":  ("MFL", 75, 54),
-    "LA":   ("LOX", 154, 44),
-    "DAL":  ("FWD", 80, 103),
-    "AUS":  ("EWX", 156, 91),
-    "DEN":  ("BOU", 63, 62),
+    "NYC": ("OKX", 33, 37),
+    "CHI": ("LOT", 76, 73),
+    "MIA": ("MFL", 75, 54),
+    "LA": ("LOX", 154, 44),
+    "DAL": ("FWD", 80, 103),
+    "AUS": ("EWX", 156, 91),
+    "DEN": ("BOU", 63, 62),
     "PHIL": ("PHI", 50, 76),
-    "SEA":  ("SEW", 125, 68),
-    "SFO":  ("MTR", 85, 105),
-    "ATL":  ("FFC", 51, 87),
-    "BOS":  ("BOX", 71, 90),
-    "MIN":  ("MPX", 108, 72),
-    "PHX":  ("PSR", 159, 58),
+    "SEA": ("SEW", 125, 68),
+    "SFO": ("MTR", 85, 105),
+    "ATL": ("FFC", 51, 87),
+    "BOS": ("BOX", 71, 90),
+    "MIN": ("MPX", 108, 72),
+    "PHX": ("PSR", 159, 58),
     "NOLA": ("LIX", 68, 88),
 }
 
@@ -63,36 +64,37 @@ CITY_GRID_POINTS: dict[str, tuple[str, int, int]] = {
 # Low temp markets all use KXLOWT+city
 SERIES_TICKER_MAP: dict[str, tuple[str, str]] = {
     # High temp — original cities (KXHIGH prefix)
-    "KXHIGHNY":    ("NYC", "high"),
-    "KXHIGHCHI":   ("CHI", "high"),
-    "KXHIGHMIA":   ("MIA", "high"),
-    "KXHIGHLAX":   ("LA", "high"),
-    "KXHIGHAUS":   ("AUS", "high"),
-    "KXHIGHDEN":   ("DEN", "high"),
-    "KXHIGHPHIL":  ("PHIL", "high"),
+    "KXHIGHNY": ("NYC", "high"),
+    "KXHIGHCHI": ("CHI", "high"),
+    "KXHIGHMIA": ("MIA", "high"),
+    "KXHIGHLAX": ("LA", "high"),
+    "KXHIGHAUS": ("AUS", "high"),
+    "KXHIGHDEN": ("DEN", "high"),
+    "KXHIGHPHIL": ("PHIL", "high"),
     # High temp — newer cities (KXHIGHT prefix)
-    "KXHIGHTDAL":  ("DAL", "high"),
-    "KXHIGHTSEA":  ("SEA", "high"),
-    "KXHIGHTSFO":  ("SFO", "high"),
-    "KXHIGHTATL":  ("ATL", "high"),
-    "KXHIGHTBOS":  ("BOS", "high"),
-    "KXHIGHTMIN":  ("MIN", "high"),
-    "KXHIGHTPHX":  ("PHX", "high"),
+    "KXHIGHTDAL": ("DAL", "high"),
+    "KXHIGHTSEA": ("SEA", "high"),
+    "KXHIGHTSFO": ("SFO", "high"),
+    "KXHIGHTATL": ("ATL", "high"),
+    "KXHIGHTBOS": ("BOS", "high"),
+    "KXHIGHTMIN": ("MIN", "high"),
+    "KXHIGHTPHX": ("PHX", "high"),
     "KXHIGHTNOLA": ("NOLA", "high"),
     # Low temp (KXLOWT prefix)
-    "KXLOWTNYC":   ("NYC", "low"),
-    "KXLOWTCHI":   ("CHI", "low"),
-    "KXLOWTLAX":   ("LA", "low"),
-    "KXLOWTDEN":   ("DEN", "low"),
-    "KXLOWTPHIL":  ("PHIL", "low"),
-    "KXLOWTAUS":   ("AUS", "low"),
-    "KXLOWTMIA":   ("MIA", "low"),
+    "KXLOWTNYC": ("NYC", "low"),
+    "KXLOWTCHI": ("CHI", "low"),
+    "KXLOWTLAX": ("LA", "low"),
+    "KXLOWTDEN": ("DEN", "low"),
+    "KXLOWTPHIL": ("PHIL", "low"),
+    "KXLOWTAUS": ("AUS", "low"),
+    "KXLOWTMIA": ("MIA", "low"),
 }
 
 
 # ---------------------------------------------------------------------------
 # Probability model
 # ---------------------------------------------------------------------------
+
 
 def _normal_cdf(x: float) -> float:
     """Standard normal CDF via math.erf."""
@@ -132,6 +134,7 @@ def probability_above_threshold(
 # Temperature parser
 # ---------------------------------------------------------------------------
 
+
 def parse_temp_from_title(title: str) -> Optional[float]:
     """
     Extract a temperature threshold (deg F) from a market title.
@@ -143,8 +146,8 @@ def parse_temp_from_title(title: str) -> Optional[float]:
       "T75" (ticker suffix)
       "above 75"
     """
-    # Pattern: ">35°" or ">35° F" — the actual Kalshi format
-    angle_match = re.search(r'>\s*(\-?\d+)\s*°', title)
+    # Pattern: ">35°" / "<35°" and optional "F" suffix
+    angle_match = re.search(r"[<>]\s*(\-?\d+)\s*°", title)
     if angle_match:
         try:
             temp = float(angle_match.group(1))
@@ -154,7 +157,7 @@ def parse_temp_from_title(title: str) -> Optional[float]:
             pass
 
     # Pattern: number followed by deg F indicator (75°F, 75 degrees F, 75F)
-    matches = re.findall(r'(\-?\d+)\s*(?:°\s*F|deg(?:rees)?\s*F?|F\b)', title)
+    matches = re.findall(r"(\-?\d+)\s*(?:°\s*F|deg(?:rees)?\s*F?|F\b)", title)
     for match in matches:
         try:
             temp = float(match)
@@ -165,8 +168,9 @@ def parse_temp_from_title(title: str) -> Optional[float]:
 
     # Pattern: "above/exceed/over/below/under NUMBER"
     context_match = re.search(
-        r'(?:above|exceed|over|below|under|higher than|lower than)\s+(\-?\d+)',
-        title, re.IGNORECASE,
+        r"(?:above|exceed|over|below|under|higher than|lower than)\s+(\-?\d+)",
+        title,
+        re.IGNORECASE,
     )
     if context_match:
         try:
@@ -177,7 +181,7 @@ def parse_temp_from_title(title: str) -> Optional[float]:
             pass
 
     # Ticker-style: T followed by digits (e.g., "T75")
-    ticker_match = re.search(r'\bT(\-?\d+)\b', title)
+    ticker_match = re.search(r"\bT(\-?\d+)\b", title)
     if ticker_match:
         try:
             temp = float(ticker_match.group(1))
@@ -189,9 +193,22 @@ def parse_temp_from_title(title: str) -> Optional[float]:
     return None
 
 
+def parse_contract_direction(title: str) -> Optional[str]:
+    """Return "above" or "below" based on market title wording/symbols."""
+    lower = title.lower()
+
+    if re.search(r"(<|below|under|less than|lower than|at or below)", lower):
+        return "below"
+    if re.search(r"(>|above|over|exceed|greater than|higher than|at or above)", lower):
+        return "above"
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # NOAA forecast fetcher
 # ---------------------------------------------------------------------------
+
 
 class _ForecastCache:
     """Simple per-city cache for NOAA forecasts."""
@@ -261,7 +278,9 @@ async def get_noaa_forecast(city_key: str) -> Optional[dict]:
         _forecast_cache.set(city_key, result)
         logger.debug(
             "WeatherStrategy: NOAA forecast for %s — high=%s low=%s",
-            city_key, result["high"], result["low"],
+            city_key,
+            result["high"],
+            result["low"],
         )
         return result
 
@@ -276,6 +295,7 @@ async def get_noaa_forecast(city_key: str) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 # Strategy class
 # ---------------------------------------------------------------------------
+
 
 class WeatherStrategy:
     """
@@ -316,6 +336,7 @@ class WeatherStrategy:
             try:
                 from api.models import Trade
                 from sqlalchemy import select
+
                 cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
                 result = await db_session.execute(
                     select(Trade.market_id).where(
@@ -325,7 +346,10 @@ class WeatherStrategy:
                 )
                 recently_traded = {r[0] for r in result.fetchall()}
                 if recently_traded:
-                    logger.debug("WeatherStrategy: %d market(s) on cooldown", len(recently_traded))
+                    logger.debug(
+                        "WeatherStrategy: %d market(s) on cooldown",
+                        len(recently_traded),
+                    )
             except Exception as exc:
                 logger.warning("WeatherStrategy: cooldown check failed: %s", exc)
 
@@ -339,12 +363,15 @@ class WeatherStrategy:
 
             try:
                 markets = await client.get_markets(
-                    status="open", series_ticker=series_ticker, limit=200,
+                    status="open",
+                    series_ticker=series_ticker,
+                    limit=200,
                 )
             except Exception as exc:
                 logger.warning(
                     "WeatherStrategy: failed to fetch markets for %s: %s",
-                    series_ticker, exc,
+                    series_ticker,
+                    exc,
                 )
                 continue
 
@@ -361,7 +388,9 @@ class WeatherStrategy:
                     continue
                 try:
                     signal = self._evaluate_market(
-                        market, forecasts[city_key], market_type,
+                        market,
+                        forecasts[city_key],
+                        market_type,
                     )
                     if signal:
                         signals.append(signal)
@@ -370,7 +399,8 @@ class WeatherStrategy:
 
         logger.info(
             "WeatherStrategy: scanned %d weather markets → %d signal(s)",
-            total_markets, len(signals),
+            total_markets,
+            len(signals),
         )
         return signals
 
@@ -417,9 +447,19 @@ class WeatherStrategy:
             return None
         market_yes_price = float(yes_ask_raw) / 100.0
 
-        # Fair probability from model
-        our_prob_yes = probability_above_threshold(
-            forecast_temp, threshold, hours_to_close,
+        # Fair probability from model. Convert to YES probability based on
+        # contract wording (> threshold vs < threshold).
+        contract_direction = parse_contract_direction(title)
+        if contract_direction is None:
+            return None
+
+        prob_above = probability_above_threshold(
+            forecast_temp,
+            threshold,
+            hours_to_close,
+        )
+        our_prob_yes = (
+            prob_above if contract_direction == "above" else (1.0 - prob_above)
         )
         our_prob_no = 1.0 - our_prob_yes
 
@@ -430,10 +470,22 @@ class WeatherStrategy:
         yes_edge = our_prob_yes - market_yes_price
         no_edge = our_prob_no - market_no_price
 
-        if no_edge >= self.min_edge and (no_edge >= yes_edge or yes_edge < self.min_edge):
-            side, entry_price, our_probability, edge = "no", market_no_price, our_prob_no, no_edge
+        if no_edge >= self.min_edge and (
+            no_edge >= yes_edge or yes_edge < self.min_edge
+        ):
+            side, entry_price, our_probability, edge = (
+                "no",
+                market_no_price,
+                our_prob_no,
+                no_edge,
+            )
         elif yes_edge >= self.min_edge:
-            side, entry_price, our_probability, edge = "yes", market_yes_price, our_prob_yes, yes_edge
+            side, entry_price, our_probability, edge = (
+                "yes",
+                market_yes_price,
+                our_prob_yes,
+                yes_edge,
+            )
         else:
             return None
 
@@ -464,7 +516,8 @@ class WeatherStrategy:
             reasoning=(
                 f"Forecast {market_type}={forecast_temp:.0f}F vs threshold={threshold:.0f}F "
                 f"({hours_to_close:.1f}h to close) — "
-                f"model_prob={our_probability:.2f} market={market_yes_price:.2f} "
+                f"contract_yes={contract_direction} model_prob={our_probability:.2f} "
+                f"market_yes={market_yes_price:.2f} "
                 f"edge={edge:.3f} side={side}"
             ),
         )
