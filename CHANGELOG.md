@@ -1,5 +1,29 @@
 # Kalshi Bot Change Log
 
+## How to Deploy Strategy Changes
+
+Every time we adjust strategies, follow this workflow:
+
+1. **Make code changes** locally (or via opencode)
+2. **Commit & push** to trigger Railway auto-deploy
+3. **Redeploy worker** to pick up changes immediately:
+   ```bash
+   cd ~/auto-trading-bot
+   railway redeploy -s "Auto-Trading-Worker" -y
+   railway redeploy -s "Auto-Trading-Bot" -y
+   ```
+4. **Archive & reset** — wipes all positions, trades, PnL, and resets bankroll:
+   ```bash
+   python -m scripts.archive_and_start_fresh \
+     --label paper-v4 \
+     --strategy-version v4 \
+     --bankroll 1000 \
+     --enable-bot
+   ```
+5. **Verify** in the UI — should show $1000 bankroll, 0 trades, 0 positions
+
+---
+
 ## 2026-03-04 — Strategy Overhaul (Session: Paper Trading v2)
 Changes made by: Koempassu's Klaw (via opencode)
 
