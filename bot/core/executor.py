@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
+from sqlalchemy.orm.exc import StaleDataError
 
 from bot.core.kalshi_client import KalshiClient
 from bot.intelligence.signal_scorer import TradeSignal
@@ -282,8 +283,19 @@ class Executor:
 
         for position in positions:
             try:
+                current_result = await db_session.execute(
+                    select(Position).where(Position.id == position.id)
+                )
+                current_position = current_result.scalar_one_or_none()
+                if current_position is None:
+                    await db_session.rollback()
+                    logger.debug(
+                        "Executor: skipping stale position id=%s (already removed)",
+                        position.id,
+                    )
+                    continue
                 await self._check_position(
-                    position, client, db_session, reflection_callback
+                    current_position, client, db_session, reflection_callback
                 )
             except Exception as exc:
                 logger.error(
@@ -459,7 +471,14 @@ class Executor:
                     current_price,
                 )
 
-        await db_session.commit()
+        try:
+            await db_session.commit()
+        except StaleDataError:
+            logger.warning(
+                "Executor: stale position update skipped for %s",
+                position.market_id,
+            )
+            await db_session.rollback()
 
     # -------------------------------------------------------------------------
     # Close a position

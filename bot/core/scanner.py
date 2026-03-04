@@ -133,7 +133,7 @@ class Scanner:
                 logger.error("Scanner: bond strategy error: %s", exc)
 
         mm_enabled = await self._get_setting(
-            db_session, "market_making_enabled", "true"
+            db_session, "market_making_enabled", "false"
         )
         if mm_enabled.lower() == "true":
             try:
@@ -163,7 +163,7 @@ class Scanner:
                 logger.error("Scanner: BTC strategy error: %s", exc)
 
         weather_enabled = await self._get_setting(
-            db_session, "weather_strategy_enabled", "false"
+            db_session, "weather_strategy_enabled", "true"
         )
         if weather_enabled.lower() == "true":
             try:
@@ -206,6 +206,22 @@ class Scanner:
         )
 
         for signal in all_signals:
+            kelly_size = self.risk_manager.calculate_kelly_size(
+                our_probability=signal.our_probability,
+                market_price=signal.entry_price,
+                bankroll=bankroll,
+            )
+            if kelly_size <= 0:
+                logger.info(
+                    "Scanner: kelly gate rejected %s %s (p=%.3f, price=%.3f)",
+                    signal.ticker,
+                    signal.side,
+                    signal.our_probability,
+                    signal.entry_price,
+                )
+                continue
+            signal.proposed_size = kelly_size
+
             if signal.strategy == "market_making":
                 observed_capture = max(0.0, float(signal.expected_return_pct or 0.0))
                 required_capture = mm_min_capture

@@ -2,6 +2,7 @@
 Bond Strategy — buy near-certain Kalshi market outcomes (priced 94¢+)
 before resolution and collect the premium.
 """
+
 import logging
 import os
 from datetime import datetime, timezone
@@ -20,7 +21,7 @@ class BondStrategy:
     """Scans for near-certain market outcomes to capture before resolution."""
 
     def __init__(self):
-        self.min_price = float(os.getenv("BOND_MIN_PRICE", "0.88"))
+        self.min_price = float(os.getenv("BOND_MIN_PRICE", "0.94"))
         # Kalshi markets often resolve months/years out; allow wider window
         self.max_hours_to_resolution = float(
             os.getenv("BOND_MAX_HOURS_TO_RESOLUTION", "8760")  # 1 year default
@@ -51,13 +52,16 @@ class BondStrategy:
 
         for market in markets:
             try:
-                signal = await self._evaluate_market(client, market, open_position_tickers)
+                signal = await self._evaluate_market(
+                    client, market, open_position_tickers
+                )
                 if signal:
                     signals.append(signal)
             except Exception as exc:
                 logger.warning(
                     "BondStrategy: error evaluating %s: %s",
-                    market.get("ticker", "?"), exc,
+                    market.get("ticker", "?"),
+                    exc,
                 )
                 continue
 
@@ -92,7 +96,11 @@ class BondStrategy:
             return None
 
         hours_to_close = self._hours_until(close_time)
-        if hours_to_close is None or hours_to_close > self.max_hours_to_resolution or hours_to_close <= 0:
+        if (
+            hours_to_close is None
+            or hours_to_close > self.max_hours_to_resolution
+            or hours_to_close <= 0
+        ):
             return None
 
         # Fetch orderbook to get ask prices

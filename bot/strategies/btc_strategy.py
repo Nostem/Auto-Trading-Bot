@@ -3,11 +3,12 @@ BTC 15-Minute Strategy — RSI momentum-based approach for Kalshi Bitcoin
 price prediction markets.
 
 Uses 15-minute BTC/USDT candles from Binance to compute a 14-period RSI.
-  - RSI < 30 (oversold) → buy YES on bullish contracts (expect rebound)
-  - RSI > 70 (overbought) → buy NO on bullish contracts (expect pullback)
+  - RSI < 35 (oversold) → buy YES on bullish contracts (expect rebound)
+  - RSI > 65 (overbought) → buy NO on bullish contracts (expect pullback)
 
 Targets open BTC markets (KXBTC series) with suitable time horizons.
 """
+
 import logging
 import os
 import re
@@ -24,14 +25,14 @@ logger = logging.getLogger(__name__)
 
 # --- Config defaults (overridable via env) ---
 _RSI_PERIOD = 14
-_RSI_OVERBOUGHT = 70
-_RSI_OVERSOLD = 30
-_MAX_HOURS = 8.0               # trade markets closing within 8 hours
-_MIN_HOURS = 0.1               # skip markets closing in < 6 minutes
-_CONFIDENCE = 0.65             # moderate — RSI is a well-known indicator
-_YES_MIN_ENTRY = 0.35          # YES (oversold rebound) — lower floor since RSI gives direction
-_NO_MIN_ENTRY = 0.25           # NO (overbought fade) — fee-viable
-_MIN_VOLUME = 0                # BTC markets on Kalshi have low volume; skip only dead ones
+_RSI_OVERBOUGHT = 65
+_RSI_OVERSOLD = 35
+_MAX_HOURS = 8.0  # trade markets closing within 8 hours
+_MIN_HOURS = 0.1  # skip markets closing in < 6 minutes
+_CONFIDENCE = 0.65  # moderate — RSI is a well-known indicator
+_YES_MIN_ENTRY = 0.35  # YES (oversold rebound) — lower floor since RSI gives direction
+_NO_MIN_ENTRY = 0.25  # NO (overbought fade) — fee-viable
+_MIN_VOLUME = 0  # BTC markets on Kalshi have low volume; skip only dead ones
 
 # Candle data endpoints (no API keys needed)
 _BINANCE_US_KLINES_URL = "https://api.binance.us/api/v3/klines"
@@ -44,6 +45,7 @@ _BTC_SERIES = ["KXBTC", "KXBTCMAX", "KXBTCMIN", "KXBTCMAXY"]
 # ---------------------------------------------------------------------------
 # RSI calculation (manual — no talib dependency)
 # ---------------------------------------------------------------------------
+
 
 def calculate_rsi(closes: list[float], period: int = _RSI_PERIOD) -> Optional[float]:
     """
@@ -81,6 +83,7 @@ def calculate_rsi(closes: list[float], period: int = _RSI_PERIOD) -> Optional[fl
 # Strike price parser
 # ---------------------------------------------------------------------------
 
+
 def parse_strike_from_title(title: str) -> Optional[float]:
     """
     Extract a BTC dollar strike price from a market title.
@@ -91,7 +94,7 @@ def parse_strike_from_title(title: str) -> Optional[float]:
       "Bitcoin > $90000 at 3pm ET"
       "KXBTC-25MAR01-B90000"  (ticker format)
     """
-    matches = re.findall(r'\$([0-9,]+(?:\.[0-9]+)?)', title)
+    matches = re.findall(r"\$([0-9,]+(?:\.[0-9]+)?)", title)
     for match in matches:
         try:
             price = float(match.replace(",", ""))
@@ -100,7 +103,7 @@ def parse_strike_from_title(title: str) -> Optional[float]:
         except ValueError:
             continue
 
-    ticker_match = re.search(r'[B-](\d{4,7})\b', title)
+    ticker_match = re.search(r"[B-](\d{4,7})\b", title)
     if ticker_match:
         try:
             price = float(ticker_match.group(1))
@@ -116,6 +119,7 @@ def parse_strike_from_title(title: str) -> Optional[float]:
 # Strategy class
 # ---------------------------------------------------------------------------
 
+
 class BTCStrategy:
     """
     RSI momentum strategy for Kalshi BTC prediction markets.
@@ -125,10 +129,16 @@ class BTCStrategy:
     """
 
     def __init__(self):
-        self.max_hours = float(os.getenv("BTC_MAX_HOURS_TO_RESOLUTION", str(_MAX_HOURS)))
-        self.rsi_overbought = float(os.getenv("BTC_RSI_OVERBOUGHT", str(_RSI_OVERBOUGHT)))
+        self.max_hours = float(
+            os.getenv("BTC_MAX_HOURS_TO_RESOLUTION", str(_MAX_HOURS))
+        )
+        self.rsi_overbought = float(
+            os.getenv("BTC_RSI_OVERBOUGHT", str(_RSI_OVERBOUGHT))
+        )
         self.rsi_oversold = float(os.getenv("BTC_RSI_OVERSOLD", str(_RSI_OVERSOLD)))
-        self._cached_candles: Optional[tuple[float, list[float]]] = None  # (timestamp, closes)
+        self._cached_candles: Optional[tuple[float, list[float]]] = (
+            None  # (timestamp, closes)
+        )
         self._cached_price: Optional[float] = None
 
     async def _fetch_candles(self) -> Optional[list[float]]:
@@ -152,7 +162,8 @@ class BTCStrategy:
             self._cached_price = closes[-1]
             logger.debug(
                 "BTCStrategy: fetched %d candles, latest close=$%s",
-                len(closes), f"{closes[-1]:,.2f}",
+                len(closes),
+                f"{closes[-1]:,.2f}",
             )
             return closes
 
@@ -225,11 +236,14 @@ class BTCStrategy:
         if rsi < self.rsi_oversold:
             rsi_side = "yes"  # oversold → expect rebound → buy YES on bullish contracts
         elif rsi > self.rsi_overbought:
-            rsi_side = "no"   # overbought → expect pullback → buy NO on bullish contracts
+            rsi_side = (
+                "no"  # overbought → expect pullback → buy NO on bullish contracts
+            )
         else:
             logger.info(
                 "BTCStrategy: RSI=%.1f (neutral zone) — no signal (BTC=$%s)",
-                rsi, f"{btc_price:,.0f}",
+                rsi,
+                f"{btc_price:,.0f}",
             )
             return []
 
@@ -238,12 +252,16 @@ class BTCStrategy:
         for series in _BTC_SERIES:
             try:
                 markets = await client.get_markets(
-                    status="open", series_ticker=series, limit=200,
+                    status="open",
+                    series_ticker=series,
+                    limit=200,
                 )
                 if markets:
                     all_btc_markets.extend(markets)
             except Exception as exc:
-                logger.warning("BTCStrategy: failed to fetch %s markets: %s", series, exc)
+                logger.warning(
+                    "BTCStrategy: failed to fetch %s markets: %s", series, exc
+                )
 
         if not all_btc_markets:
             logger.info("BTCStrategy: no open BTC markets found on Kalshi")
@@ -264,6 +282,7 @@ class BTCStrategy:
             try:
                 from api.models import Trade
                 from sqlalchemy import select
+
                 cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
                 result = await db_session.execute(
                     select(Trade.market_id).where(
@@ -273,7 +292,9 @@ class BTCStrategy:
                 )
                 recently_traded = {r[0] for r in result.fetchall()}
                 if recently_traded:
-                    logger.debug("BTCStrategy: %d market(s) on cooldown", len(recently_traded))
+                    logger.debug(
+                        "BTCStrategy: %d market(s) on cooldown", len(recently_traded)
+                    )
             except Exception as exc:
                 logger.warning("BTCStrategy: cooldown check failed: %s", exc)
 
@@ -293,7 +314,11 @@ class BTCStrategy:
 
         logger.info(
             "BTCStrategy: RSI=%.1f (%s) BTC=$%s — scanned %d markets → %d signal(s)",
-            rsi, rsi_side.upper(), f"{btc_price:,.0f}", len(btc_markets), len(signals),
+            rsi,
+            rsi_side.upper(),
+            f"{btc_price:,.0f}",
+            len(btc_markets),
+            len(signals),
         )
         return signals
 
@@ -353,13 +378,19 @@ class BTCStrategy:
         if side == "yes":
             rsi_strength = (self.rsi_oversold - rsi) / self.rsi_oversold  # 0..1
         else:
-            rsi_strength = (rsi - self.rsi_overbought) / (100 - self.rsi_overbought)  # 0..1
+            rsi_strength = (rsi - self.rsi_overbought) / (
+                100 - self.rsi_overbought
+            )  # 0..1
         rsi_strength = max(0.0, min(1.0, rsi_strength))
 
         # Edge estimate based on RSI strength and how favorable the entry price is
         # Stronger RSI signal → more confidence in directional move
         base_edge = 0.02 + (rsi_strength * 0.06)  # 2%–8% edge range
-        our_probability = entry_price + base_edge if entry_price < 0.5 else entry_price + base_edge * 0.5
+        our_probability = (
+            entry_price + base_edge
+            if entry_price < 0.5
+            else entry_price + base_edge * 0.5
+        )
 
         our_probability = max(0.05, min(0.95, our_probability))
         edge = our_probability - entry_price
