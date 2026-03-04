@@ -10,7 +10,46 @@ if [ "$MODE" = "api" ]; then
 fi
 
 if [ "$MODE" = "worker" ]; then
-  exec python -m bot.main
+  python -m bot.main &
+  BOT_PID=$!
+
+  python - <<'PY' &
+import os
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/health":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"ok")
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        return
+
+
+port = int(os.getenv("PORT", "8000"))
+HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+PY
+  HEALTH_PID=$!
+
+  shutdown() {
+    kill "$BOT_PID" "$HEALTH_PID" 2>/dev/null || true
+    wait "$BOT_PID" 2>/dev/null || true
+    wait "$HEALTH_PID" 2>/dev/null || true
+  }
+
+  trap shutdown INT TERM
+
+  wait -n "$BOT_PID" "$HEALTH_PID"
+  STATUS=$?
+  shutdown
+  exit "$STATUS"
 fi
 
 if [ "$MODE" != "all" ]; then
