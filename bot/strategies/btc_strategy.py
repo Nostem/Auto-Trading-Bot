@@ -47,6 +47,72 @@ _BTC_SERIES = ["KXBTC", "KXBTCMAX", "KXBTCMIN", "KXBTCMAXY"]
 # ---------------------------------------------------------------------------
 
 
+def calculate_sma(closes: list[float], period: int) -> Optional[float]:
+    """Calculate Simple Moving Average over the last `period` values."""
+    if len(closes) < period:
+        return None
+    return sum(closes[-period:]) / period
+
+
+def calculate_momentum(closes: list[float]) -> Optional[dict]:
+    """
+    Calculate momentum across 1-candle (15m), 5-candle (75m), and 15-candle (225m) windows.
+    Returns dict with 'short', 'medium', 'long' deltas and 'direction' ('bullish'/'bearish'/None).
+    """
+    if len(closes) < 16:
+        return None
+    short = closes[-1] - closes[-2]       # 1 candle = 15 min
+    medium = closes[-1] - closes[-6]      # 5 candles = 75 min
+    long_ = closes[-1] - closes[-16]      # 15 candles = 225 min
+
+    direction = None
+    if short > 0 and medium > 0 and long_ > 0:
+        direction = "bullish"
+    elif short < 0 and medium < 0 and long_ < 0:
+        direction = "bearish"
+
+    return {"short": short, "medium": medium, "long": long_, "direction": direction}
+
+
+def calculate_sma_crossover(closes: list[float], fast: int = 5, slow: int = 20) -> Optional[str]:
+    """
+    Detect SMA crossover. Returns 'bullish' if fast > slow, 'bearish' if fast < slow, None if insufficient data.
+    """
+    fast_sma = calculate_sma(closes, fast)
+    slow_sma = calculate_sma(closes, slow)
+    if fast_sma is None or slow_sma is None:
+        return None
+    if fast_sma > slow_sma:
+        return "bullish"
+    elif fast_sma < slow_sma:
+        return "bearish"
+    return None
+
+
+def check_convergence(rsi_side: str, momentum: Optional[dict], sma_cross: Optional[str]) -> tuple[bool, int, str]:
+    """
+    Check if 2+ indicators agree on direction.
+    Returns (passed, agreement_count, detail_string).
+    RSI side: 'yes' = bullish, 'no' = bearish.
+    """
+    rsi_direction = "bullish" if rsi_side == "yes" else "bearish"
+    
+    signals = {"RSI": rsi_direction}
+    
+    if momentum and momentum.get("direction"):
+        signals["Momentum"] = momentum["direction"]
+    
+    if sma_cross:
+        signals["SMA"] = sma_cross
+    
+    # Count agreements with the RSI direction
+    agreeing = [name for name, direction in signals.items() if direction == rsi_direction]
+    
+    detail = ", ".join(f"{name}={signals[name]}" for name in sorted(signals.keys()))
+    
+    return len(agreeing) >= 2, len(agreeing), detail
+
+
 def calculate_rsi(closes: list[float], period: int = _RSI_PERIOD) -> Optional[float]:
     """
     Calculate the Relative Strength Index from a list of close prices.
@@ -232,6 +298,10 @@ class BTCStrategy:
 
         btc_price = closes[-1]
 
+        # Compute all indicators
+        momentum = calculate_momentum(closes)
+        sma_cross = calculate_sma_crossover(closes, fast=5, slow=20)
+
         # Determine signal direction from RSI
         if rsi < self.rsi_oversold:
             rsi_side = "yes"  # oversold → expect rebound → buy YES on bullish contracts
@@ -241,11 +311,33 @@ class BTCStrategy:
             )
         else:
             logger.info(
-                "BTCStrategy: RSI=%.1f (neutral zone) — no signal (BTC=$%s)",
+                "BTCStrategy: RSI=%.1f (neutral zone) — no signal (BTC=$%s, momentum=%s, sma=%s)",
                 rsi,
                 f"{btc_price:,.0f}",
+                momentum.get("direction") if momentum else "N/A",
+                sma_cross or "N/A",
             )
             return []
+
+        # Convergence filter: require 2+ indicators to agree
+        converged, agreement_count, convergence_detail = check_convergence(
+            rsi_side, momentum, sma_cross
+        )
+        if not converged:
+            logger.info(
+                "BTCStrategy: RSI=%.1f (%s) but convergence failed (%d/3): %s — skipping",
+                rsi,
+                rsi_side.upper(),
+                agreement_count,
+                convergence_detail,
+            )
+            return []
+
+        logger.info(
+            "BTCStrategy: CONVERGENCE PASSED (%d/3): %s — scanning markets",
+            agreement_count,
+            convergence_detail,
+        )
 
         # Fetch BTC markets from multiple series tickers
         all_btc_markets: list[dict] = []

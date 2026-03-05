@@ -192,7 +192,7 @@ class RiskManager:
         if kelly_fraction <= 0:
             return 0
 
-        half_kelly = kelly_fraction * 0.5
+        half_kelly = kelly_fraction * 0.15  # 15% Kelly — conservative sizing to prevent blowup from probability errors
         kelly_amount = bankroll * half_kelly
 
         # Number of contracts = dollar amount / cost per contract

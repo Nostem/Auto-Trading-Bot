@@ -21,7 +21,7 @@ from bot.intelligence.signal_scorer import TradeSignal
 logger = logging.getLogger(__name__)
 
 # --- Config defaults (overridable via env) ---
-_WEATHER_MIN_EDGE = 0.04  # 4% minimum edge
+_WEATHER_MIN_EDGE = 0.08  # 8% minimum edge — fees eat everything below this
 _WEATHER_MAX_HOURS = 36.0  # trade markets closing within 36 hours
 _WEATHER_MIN_HOURS = 0.5  # skip markets closing in < 30 minutes
 _WEATHER_CONFIDENCE = 0.70  # higher than BTC — forecasts are well-calibrated
@@ -31,7 +31,7 @@ _YES_MIN_ENTRY = 0.70  # YES trades must be >= 70 cents
 _NO_MIN_ENTRY = 0.25  # NO trades must be >= 25 cents
 _MIN_VOLUME = 5000  # $5k minimum market volume
 _MIN_ENSEMBLE_AGREEMENT = 0.80  # trade only when >80% of members agree
-_NEAR_THRESHOLD_GUARD_F = 1.0  # skip when ensemble mean too close to threshold
+_NEAR_THRESHOLD_GUARD_F = 2.0  # skip when ensemble mean within 2°F of threshold
 
 _NOAA_USER_AGENT = "(KalshiWeatherBot, contact@example.com)"
 _OPEN_METEO_FORECAST_HOURS = 48
