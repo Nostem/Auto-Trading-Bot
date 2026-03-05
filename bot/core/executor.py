@@ -426,7 +426,7 @@ class Executor:
                 )
                 return
 
-        # --- BTC take-profit ---
+        # --- Take-profit (BTC and Weather) ---
         if strategy == "btc_15min" and entry_value > 0:
             btc_take_profit = await self._get_param(db_session, "btc_take_profit_pct")
             profit_pct = unrealized / entry_value
@@ -441,6 +441,27 @@ class Executor:
                     reflection_callback=reflection_callback,
                 )
                 return
+
+        if strategy == "weather" and entry_value > 0:
+            weather_take_profit = await self._get_param(
+                db_session, "weather_take_profit_pct"
+            )
+            if weather_take_profit and weather_take_profit > 0:
+                profit_pct = unrealized / entry_value
+                if profit_pct >= weather_take_profit:
+                    reason = (
+                        f"Weather take-profit ({profit_pct:.0%} gain, "
+                        f"threshold {weather_take_profit:.0%})"
+                    )
+                    logger.info("Executor: %s on %s", reason, position.market_id)
+                    await self.close_position(
+                        position,
+                        client,
+                        db_session,
+                        reason=reason,
+                        reflection_callback=reflection_callback,
+                    )
+                    return
 
         # --- MM time limit ---
         if strategy == "market_making" and position.opened_at:

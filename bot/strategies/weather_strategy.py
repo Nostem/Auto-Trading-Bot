@@ -472,7 +472,7 @@ class WeatherStrategy:
                 from api.models import Trade
                 from sqlalchemy import select
 
-                cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=6)  # 6h cooldown — don't re-enter a market we already lost on today
                 result = await db_session.execute(
                     select(Trade.market_id).where(
                         Trade.strategy == "weather",

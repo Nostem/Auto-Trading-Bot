@@ -26,6 +26,13 @@ TUNABLE_PARAMS: dict[str, dict] = {
         "max": 0.60,
         "type": "float",
     },
+    "weather_take_profit_pct": {
+        "description": "Weather take-profit percentage (e.g. 0.30 = exit at 30% gain on entry value)",
+        "default": 0.30,
+        "min": 0.10,
+        "max": 0.80,
+        "type": "float",
+    },
     "mm_max_hold_hours": {
         "description": "Maximum hours to hold a market-making position before forced exit",
         "default": 4,
