@@ -24,6 +24,15 @@ Every time we adjust strategies, follow this workflow:
 
 ---
 
+## 2026-03-04 — v4 Strategy Overhaul: Ensemble Weather, Multi-Indicator BTC, Position Sizing Fix
+
+- Fixed critical bug: `RiskManager` now reads `max_position_pct` from DB settings (was ignoring UI setting, using 15% instead of user-set 5%).
+- Weather: switched from NOAA point forecast to 31-member GFS ensemble via Open-Meteo (free API).
+- Weather: raised min edge 4% -> 8%, added ensemble agreement filter (>80%), near-threshold guard (2F).
+- Kelly sizing: reduced from half-Kelly (50%) to 15% fraction to reduce blowup risk from probability errors.
+- BTC: added VWAP deviation, multi-timeframe momentum, SMA crossover + convergence filter (2+ must agree).
+- Max position default: 15% -> 5% of bankroll.
+
 ## 2026-03-04 — Strategy Overhaul (Session: Paper Trading v2)
 Changes made by: Koempassu's Klaw (via opencode)
 

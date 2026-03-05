@@ -34,7 +34,7 @@ class RiskManager:
     """
 
     def __init__(self):
-        self.max_position_pct = float(os.getenv("MAX_POSITION_PCT", "0.15"))
+        self.max_position_pct = float(os.getenv("MAX_POSITION_PCT", "0.05"))
         self.daily_loss_limit_pct = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "0.03"))
         self.max_total_exposure_pct = 0.60
         self.min_market_volume = 5000.0
