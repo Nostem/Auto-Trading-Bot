@@ -23,7 +23,8 @@ class TestParseContractDirection:
 class TestWeatherDirectionality:
     def test_above_contract_prefers_yes_when_forecast_above(self):
         strategy = WeatherStrategy()
-        close_time = (datetime.now(timezone.utc) + timedelta(hours=8)).isoformat()
+        close_dt = datetime.now(timezone.utc) + timedelta(hours=8)
+        close_time = close_dt.isoformat()
 
         market = {
             "ticker": "KXHIGHTDAL-26MAR04-T81",
@@ -32,9 +33,13 @@ class TestWeatherDirectionality:
             "volume": 10000,
             "yes_ask": 60,
         }
-        forecast = {"high": 86.0, "low": 60.0}
+        forecast = {
+            "source": "open-meteo",
+            "times": [close_dt],
+            "members": [[86.0] for _ in range(28)] + [[74.0] for _ in range(3)],
+        }
 
-        signal = strategy._evaluate_market(market, forecast, "high")
+        signal = strategy._evaluate_market(market, forecast)
 
         assert signal is not None
         assert signal.side == "yes"
@@ -42,7 +47,8 @@ class TestWeatherDirectionality:
 
     def test_below_contract_prefers_no_when_forecast_above(self):
         strategy = WeatherStrategy()
-        close_time = (datetime.now(timezone.utc) + timedelta(hours=8)).isoformat()
+        close_dt = datetime.now(timezone.utc) + timedelta(hours=8)
+        close_time = close_dt.isoformat()
 
         market = {
             "ticker": "KXHIGHLAX-26MAR03-T67",
@@ -51,9 +57,13 @@ class TestWeatherDirectionality:
             "volume": 10000,
             "yes_ask": 60,
         }
-        forecast = {"high": 73.0, "low": 55.0}
+        forecast = {
+            "source": "open-meteo",
+            "times": [close_dt],
+            "members": [[73.0] for _ in range(27)] + [[62.0] for _ in range(4)],
+        }
 
-        signal = strategy._evaluate_market(market, forecast, "high")
+        signal = strategy._evaluate_market(market, forecast)
 
         assert signal is not None
         assert signal.side == "no"

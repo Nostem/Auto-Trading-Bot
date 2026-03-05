@@ -36,6 +36,8 @@ class RiskManager:
     def __init__(self):
         self.max_position_pct = float(os.getenv("MAX_POSITION_PCT", "0.05"))
         self.daily_loss_limit_pct = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "0.03"))
+        self.sizing_mode = os.getenv("SIZING_MODE", "percentage")
+        self.fixed_trade_amount = float(os.getenv("FIXED_TRADE_AMOUNT", "5"))
         self.max_total_exposure_pct = 0.60
         self.min_market_volume = 5000.0
         self.max_category_positions = 2
@@ -80,8 +82,13 @@ class RiskManager:
             return TradeDecision(approved=False, recommended_size=0, reason=reason)
 
         # --- Sizing mode: fixed_dollar or percentage ---
-        sizing_mode = await self._get_setting(
-            db_session, "sizing_mode", os.getenv("SIZING_MODE", "percentage")
+        db_sizing_mode = await self._get_setting(
+            db_session,
+            "sizing_mode",
+            self.sizing_mode,
+        )
+        sizing_mode = (
+            db_sizing_mode.strip().lower() if db_sizing_mode else self.sizing_mode
         )
         entry_price = (
             float(market.get("yes_ask", 0.5))
@@ -92,13 +99,15 @@ class RiskManager:
             entry_price = 0.5
 
         if sizing_mode == "fixed_dollar":
-            fixed_amount = float(
-                await self._get_setting(
-                    db_session,
-                    "fixed_trade_amount",
-                    os.getenv("FIXED_TRADE_AMOUNT", "5"),
-                )
+            db_fixed_amount = await self._get_setting(
+                db_session,
+                "fixed_trade_amount",
+                str(self.fixed_trade_amount),
             )
+            try:
+                fixed_amount = float(db_fixed_amount)
+            except (TypeError, ValueError):
+                fixed_amount = self.fixed_trade_amount
             proposed_size = max(1, int(fixed_amount / entry_price))
             logger.info(
                 "Fixed-dollar sizing: $%.2f / $%.4f = %d contracts for %s",
@@ -109,7 +118,20 @@ class RiskManager:
             )
 
         # --- Rule 3: Max single position size (always enforced) ---
-        max_allowed_size = self.get_max_position_size(bankroll)
+        db_max_position_pct = await self._get_setting(
+            db_session,
+            "max_position_pct",
+            str(self.max_position_pct),
+        )
+        try:
+            max_position_pct = float(db_max_position_pct)
+        except (TypeError, ValueError):
+            max_position_pct = self.max_position_pct
+
+        max_allowed_size = self.get_max_position_size(
+            bankroll,
+            max_pct_override=max_position_pct,
+        )
         trade_cost = proposed_size * entry_price
         if trade_cost > max_allowed_size:
             proposed_size = max(1, int(max_allowed_size / entry_price))
@@ -242,9 +264,13 @@ class RiskManager:
         today_pnl = float(result.scalar() or 0)
 
         # Read daily_loss_limit_pct from DB (UI-controlled), fall back to env/default
-        db_limit = await self._get_setting(db_session, "daily_loss_limit_pct", "")
+        db_limit = await self._get_setting(
+            db_session,
+            "daily_loss_limit_pct",
+            str(self.daily_loss_limit_pct),
+        )
         try:
-            daily_loss_pct = float(db_limit) if db_limit else self.daily_loss_limit_pct
+            daily_loss_pct = float(db_limit)
         except (TypeError, ValueError):
             daily_loss_pct = self.daily_loss_limit_pct
 
