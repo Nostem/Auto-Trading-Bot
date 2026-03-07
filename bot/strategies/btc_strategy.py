@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 # --- Config defaults (overridable via env) ---
 _RSI_PERIOD = 14
-_RSI_OVERBOUGHT = 65
-_RSI_OVERSOLD = 35
+_RSI_OVERBOUGHT = 60  # widened from 65 for more signal frequency
+_RSI_OVERSOLD = 40  # widened from 35 for more signal frequency
 _MAX_HOURS = 8.0  # trade markets closing within 8 hours
 _MIN_HOURS = 0.1  # skip markets closing in < 6 minutes
 _CONFIDENCE = 0.65  # moderate — RSI is a well-known indicator
@@ -475,17 +475,51 @@ class BTCStrategy:
             )  # 0..1
         rsi_strength = max(0.0, min(1.0, rsi_strength))
 
-        # Edge estimate based on RSI strength and how favorable the entry price is
-        # Stronger RSI signal → more confidence in directional move
-        base_edge = 0.02 + (rsi_strength * 0.06)  # 2%–8% edge range
-        our_probability = (
-            entry_price + base_edge
-            if entry_price < 0.5
-            else entry_price + base_edge * 0.5
-        )
+        # --- Volatility-based probability model ---
+        # Estimate P(BTC > strike at expiry) using log-normal model with realized vol
+        closes = self._cached_candles[1] if self._cached_candles else None
+        if closes and len(closes) >= 20:
+            import math
+            # Realized volatility from 15m candle returns
+            log_returns = [
+                math.log(closes[i] / closes[i - 1])
+                for i in range(1, len(closes))
+                if closes[i - 1] > 0
+            ]
+            if log_returns:
+                vol_15m = (sum(r ** 2 for r in log_returns) / len(log_returns)) ** 0.5
+                # Scale to time horizon (hours_to_close in hours, candles are 15min = 0.25h)
+                periods = hours_to_close / 0.25
+                vol_horizon = vol_15m * (periods ** 0.5)
+                vol_horizon = max(vol_horizon, 0.001)  # floor
 
-        our_probability = max(0.05, min(0.95, our_probability))
-        edge = our_probability - entry_price
+                # Log-normal P(BTC > strike)
+                z = (math.log(btc_price / strike) + 0.5 * vol_horizon ** 2) / vol_horizon
+                prob_above_strike = 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+                prob_above_strike = max(0.05, min(0.95, prob_above_strike))
+
+                # Our probability for the chosen side
+                if side == "yes":
+                    our_probability = prob_above_strike
+                else:
+                    our_probability = 1.0 - prob_above_strike
+
+                # Apply RSI directional bias (mild adjustment)
+                rsi_boost = rsi_strength * 0.03  # up to 3% boost from RSI conviction
+                our_probability = max(0.05, min(0.95, our_probability + rsi_boost))
+
+                edge = our_probability - entry_price
+                # Require edge > fee buffer (7c per side = 14c round trip on $1 contract)
+                fee_buffer = 0.02  # 2% min edge after implied fees
+                if edge < fee_buffer:
+                    return None
+            else:
+                return None
+        else:
+            # Fallback: RSI heuristic edge if no candle data
+            base_edge = 0.02 + (rsi_strength * 0.06)
+            our_probability = max(0.05, min(0.95, entry_price + base_edge))
+            edge = our_probability - entry_price
 
         expected_return_pct = (1.0 - entry_price) / entry_price
         annualized_return = expected_return_pct * (8760.0 / max(hours_to_close, 0.25))

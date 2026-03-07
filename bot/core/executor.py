@@ -361,8 +361,8 @@ class Executor:
         entry_value = entry_price * position.size
         now = datetime.now(timezone.utc)
 
-        # --- Pre-expiry exit ---
-        if position.expires_at:
+        # --- Pre-expiry exit (skip for weather — hold to resolution) ---
+        if position.expires_at and strategy != "weather":
             time_to_expiry = (position.expires_at - now).total_seconds()
             pre_expiry_key = _PRE_EXPIRY_KEYS.get(strategy)
             threshold = (
@@ -545,6 +545,8 @@ class Executor:
         now = datetime.now(timezone.utc)
 
         # Update trade record
+        is_resolution = bool(resolution_result)
+
         result = await db_session.execute(
             select(Trade).where(
                 Trade.market_id == position.market_id,
@@ -554,11 +556,26 @@ class Executor:
         open_trades = result.scalars().all()
         if open_trades:
             for trade in open_trades:
-                trade_exit_price = exit_price
-                trade_gross_pnl = (
-                    trade_exit_price - float(trade.entry_price)
-                ) * trade.size
-                trade_fees = KALSHI_FEE_PER_CONTRACT * trade.size * 2
+                if is_resolution:
+                    # Binary settlement: payout is $1 if our side won, $0 if lost
+                    our_side_won = (
+                        (trade.side == "yes" and resolution_result == "yes")
+                        or (trade.side == "no" and resolution_result == "no")
+                    )
+                    trade_exit_price = 1.0 if our_side_won else 0.0
+                    trade_gross_pnl = (
+                        trade_exit_price - float(trade.entry_price)
+                    ) * trade.size
+                    # Resolution: only entry-side fee (no exit trade placed)
+                    trade_fees = KALSHI_FEE_PER_CONTRACT * trade.size
+                else:
+                    # Early exit: sell at market price, pay both sides
+                    trade_exit_price = exit_price
+                    trade_gross_pnl = (
+                        trade_exit_price - float(trade.entry_price)
+                    ) * trade.size
+                    trade_fees = KALSHI_FEE_PER_CONTRACT * trade.size * 2
+
                 trade_net_pnl = trade_gross_pnl - trade_fees
                 trade.exit_price = trade_exit_price
                 trade.gross_pnl = trade_gross_pnl

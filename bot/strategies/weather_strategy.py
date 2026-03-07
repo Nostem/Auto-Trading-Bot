@@ -27,8 +27,10 @@ _WEATHER_MIN_HOURS = 0.5  # skip markets closing in < 30 minutes
 _WEATHER_CONFIDENCE = 0.70  # higher than BTC — forecasts are well-calibrated
 _FORECAST_STD_24H = 3.5  # deg F forecast std dev at 24h
 _FORECAST_STD_48H = 5.0  # deg F forecast std dev at 48h
-_YES_MIN_ENTRY = 0.70  # YES trades must be >= 70 cents
+_YES_MIN_ENTRY = 0.25  # YES trades must be >= 25 cents
+_YES_MAX_ENTRY = 0.82  # YES trades must be <= 82 cents — poor convexity above this
 _NO_MIN_ENTRY = 0.25  # NO trades must be >= 25 cents
+_NO_MAX_ENTRY = 0.82  # NO trades must be <= 82 cents — risk/reward collapses above this
 _MIN_VOLUME = 5000  # $5k minimum market volume
 _MIN_ENSEMBLE_AGREEMENT = 0.80  # trade only when >80% of members agree
 _NEAR_THRESHOLD_GUARD_F = 2.0  # skip when ensemble mean within 2°F of threshold
@@ -666,9 +668,10 @@ class WeatherStrategy:
         if entry_price >= 1.0 or entry_price <= 0.0:
             return None
 
-        # Side-specific minimum entry prices
+        # Side-specific entry price bounds
         min_entry = _YES_MIN_ENTRY if side == "yes" else _NO_MIN_ENTRY
-        if entry_price < min_entry:
+        max_entry = _YES_MAX_ENTRY if side == "yes" else _NO_MAX_ENTRY
+        if entry_price < min_entry or entry_price > max_entry:
             return None
 
         expected_return_pct = (1.0 - entry_price) / entry_price

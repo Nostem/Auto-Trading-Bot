@@ -24,6 +24,16 @@ Every time we adjust strategies, follow this workflow:
 
 ---
 
+## 2026-03-06 — v5: Hold-to-Resolution, Entry Caps, Vol-Based BTC
+
+- Weather: DISABLED pre-expiry exit — hold to resolution (7 wins were turned into losses by force-closing 5min early)
+- Weather: Max entry price capped at 82¢ for YES and NO — poor risk/reward above this
+- Weather: Min YES entry lowered to 25¢ (was 70¢) for better value plays
+- Resolution PnL fix: settled trades now use binary payout ($1/$0) with single-side fee instead of market price + double fee
+- BTC: Replaced RSI heuristic edge with log-normal volatility probability model using realized vol from 15m candles
+- BTC: RSI thresholds widened 35/65 → 40/60 for more signal frequency
+- BTC: Added 2% minimum edge (fee buffer) — won't trade unless model prob exceeds market price by 2%+
+
 ## 2026-03-04 — v4 Strategy Overhaul: Ensemble Weather, Multi-Indicator BTC, Position Sizing Fix
 
 - Fixed critical bug: `RiskManager` now reads `max_position_pct` from DB settings (was ignoring UI setting, using 15% instead of user-set 5%).
