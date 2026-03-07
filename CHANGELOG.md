@@ -24,6 +24,13 @@ Every time we adjust strategies, follow this workflow:
 
 ---
 
+## 2026-03-07 — v6: Fix Temp Window, No Weather Stop-Loss, Market Sanity Check
+
+- CRITICAL FIX: Weather now uses daily MAX temp (for HIGH markets) and daily MIN (for LOW markets) across all forecast hours, instead of the single temperature at market close time. Previous versions compared evening temps to daytime high thresholds — guaranteed wrong.
+- Disabled stop-loss for weather — hold to resolution only. Stop-loss was killing correct positions within minutes before they could resolve.
+- Added market sanity check: skip trades where model diverges from market by >50 percentage points. When market strongly disagrees with ensemble, something is off.
+- Reduced position sizing from 5% to 3% of bankroll ($30 max per trade) since weather trades now hold to resolution with no stop-loss safety net.
+
 ## 2026-03-06 — v5: Hold-to-Resolution, Entry Caps, Vol-Based BTC
 
 - Weather: DISABLED pre-expiry exit — hold to resolution (7 wins were turned into losses by force-closing 5min early)

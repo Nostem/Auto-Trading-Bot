@@ -405,8 +405,9 @@ class Executor:
                     reflection_callback=reflection_callback,
                 )
                 return
-        else:
+        elif strategy != "weather":
             # MM and BTC: percentage-based stop-loss
+            # Weather: NO stop-loss — hold to resolution (ensemble-backed binary bets)
             stop_loss_threshold = await self._get_param(
                 db_session, "stop_loss_threshold"
             )

@@ -587,15 +587,46 @@ class WeatherStrategy:
         if source == "open-meteo":
             forecast_times = forecast.get("times", [])
             member_series = forecast.get("members", [])
-            closest_idx = _closest_index(forecast_times, close_dt)
-            if closest_idx is None:
-                return None
 
-            member_temps = [
-                float(series[closest_idx])
-                for series in member_series
-                if isinstance(series, list) and len(series) > closest_idx
+            # Determine if this is a HIGH or LOW market from the series ticker
+            is_high_market = "HIGH" in ticker.upper()
+            is_low_market = "LOW" in ticker.upper()
+
+            # Find all forecast hours from now until market close
+            now = datetime.now(timezone.utc)
+            valid_indices = [
+                i for i, t in enumerate(forecast_times)
+                if now <= t <= close_dt
             ]
+            if not valid_indices:
+                # Fallback: use closest to close
+                closest_idx = _closest_index(forecast_times, close_dt)
+                if closest_idx is not None:
+                    valid_indices = [closest_idx]
+                else:
+                    return None
+
+            # For each ensemble member, get the relevant extreme (max for HIGH, min for LOW)
+            member_temps = []
+            for series in member_series:
+                if not isinstance(series, list):
+                    continue
+                temps_in_window = [
+                    float(series[i]) for i in valid_indices
+                    if i < len(series)
+                ]
+                if not temps_in_window:
+                    continue
+                if is_high_market:
+                    member_temps.append(max(temps_in_window))  # daily HIGH = max temp
+                elif is_low_market:
+                    member_temps.append(min(temps_in_window))  # daily LOW = min temp
+                else:
+                    # Unknown type — use closest to close
+                    closest_idx = _closest_index(forecast_times, close_dt)
+                    if closest_idx is not None and closest_idx < len(series):
+                        member_temps.append(float(series[closest_idx]))
+
             if len(member_temps) < 2:
                 return None
 
@@ -666,6 +697,18 @@ class WeatherStrategy:
             return None
 
         if entry_price >= 1.0 or entry_price <= 0.0:
+            return None
+
+        # Market sanity check: if model diverges from market by >50pp, skip
+        # When the market strongly disagrees with the ensemble, the market usually knows something we don't
+        market_implied_prob = market_yes_price if side == "yes" else market_no_price
+        divergence = abs(our_probability - market_implied_prob)
+        if divergence > 0.50:
+            logger.debug(
+                "WeatherStrategy: skipping %s — model/market divergence %.0f%% too high "
+                "(model=%.2f market=%.2f)",
+                ticker, divergence * 100, our_probability, market_implied_prob,
+            )
             return None
 
         # Side-specific entry price bounds
