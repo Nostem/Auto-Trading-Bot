@@ -28,12 +28,12 @@ _WEATHER_CONFIDENCE = 0.70  # higher than BTC — forecasts are well-calibrated
 _FORECAST_STD_24H = 3.5  # deg F forecast std dev at 24h
 _FORECAST_STD_48H = 5.0  # deg F forecast std dev at 48h
 _YES_MIN_ENTRY = 0.25  # YES trades must be >= 25 cents
-_YES_MAX_ENTRY = 0.82  # YES trades must be <= 82 cents — poor convexity above this
+_YES_MAX_ENTRY = 0.55  # YES trades must be <= 55 cents — value zone where risk/reward is symmetric
 _NO_MIN_ENTRY = 0.25  # NO trades must be >= 25 cents
-_NO_MAX_ENTRY = 0.82  # NO trades must be <= 82 cents — risk/reward collapses above this
+_NO_MAX_ENTRY = 0.55  # NO trades must be <= 55 cents — value zone where risk/reward is symmetric
 _MIN_VOLUME = 5000  # $5k minimum market volume
 _MIN_ENSEMBLE_AGREEMENT = 0.80  # trade only when >80% of members agree
-_NEAR_THRESHOLD_GUARD_F = 2.0  # skip when ensemble mean within 2°F of threshold
+_NEAR_THRESHOLD_GUARD_F = 5.0  # skip when ensemble mean within 5°F of threshold — model unreliable below this
 
 _NOAA_USER_AGENT = "(KalshiWeatherBot, contact@example.com)"
 _OPEN_METEO_FORECAST_HOURS = 48
@@ -703,7 +703,7 @@ class WeatherStrategy:
         # When the market strongly disagrees with the ensemble, the market usually knows something we don't
         market_implied_prob = market_yes_price if side == "yes" else market_no_price
         divergence = abs(our_probability - market_implied_prob)
-        if divergence > 0.50:
+        if divergence >= 0.40:
             logger.debug(
                 "WeatherStrategy: skipping %s — model/market divergence %.0f%% too high "
                 "(model=%.2f market=%.2f)",

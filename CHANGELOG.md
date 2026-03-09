@@ -24,6 +24,13 @@ Every time we adjust strategies, follow this workflow:
 
 ---
 
+## 2026-03-09 — v7: Value Zone, Wider Threshold Guard, Tighter Divergence
+
+- Weather max entry: 82¢ → 55¢ — forces trades into "value zone" where risk ≈ reward. At 70¢ entry you need 77% win rate; at 40¢ you need 45%.
+- Near-threshold guard: 2°F → 5°F — ensemble model unreliable within 5°F of threshold (v6 showed 3-5°F misses causing most losses).
+- Market divergence cutoff: >50pp → ≥40pp — trust the market more when it strongly disagrees with ensemble.
+- Force redeploy to ensure weather stop-loss disable is active on Railway.
+
 ## 2026-03-07 — v6: Fix Temp Window, No Weather Stop-Loss, Market Sanity Check
 
 - CRITICAL FIX: Weather now uses daily MAX temp (for HIGH markets) and daily MIN (for LOW markets) across all forecast hours, instead of the single temperature at market close time. Previous versions compared evening temps to daytime high thresholds — guaranteed wrong.
