@@ -24,6 +24,14 @@ Every time we adjust strategies, follow this workflow:
 
 ---
 
+## 2026-03-11 — v7.1: Unblock Weather Signals, Disable BTC, Payoff-Scaled Edge
+
+- CRITICAL: v7 filters were too tight — zero weather signals generated in 2 days. Loosened filters while adding smarter edge requirements.
+- Near-threshold guard: 5°F → 3°F — daily max/min fix (v6) makes model accurate enough at 3°F gap.
+- Entry cap: 55¢ → 75¢ — but with payoff-scaled minimum edge (8% at 50¢, ~15% at 65¢, ~20% at 75¢).
+- Removed divergence check — was blocking high-confidence ensemble signals. When 31/31 members agree, that IS the edge.
+- BTC strategy DISABLED — 4W/7L, -$23.17, all wins were $0.33, RSI signals had 0.00-0.02 strength. No real edge.
+
 ## 2026-03-09 — v7: Value Zone, Wider Threshold Guard, Tighter Divergence
 
 - Weather max entry: 82¢ → 55¢ — forces trades into "value zone" where risk ≈ reward. At 70¢ entry you need 77% win rate; at 40¢ you need 45%.
