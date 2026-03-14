@@ -24,6 +24,14 @@ Every time we adjust strategies, follow this workflow:
 
 ---
 
+## 2026-03-14 — v8: Multi-Model Ensemble, NWS Station Coords, Higher Min Edge
+
+- CRITICAL: Added ECMWF IFS ensemble (51 members) alongside GFS (31 members) = 82 total ensemble members. X/Twitter research shows profitable bots use 4-5 forecast sources; single-source GFS had systematic cold bias causing consistent underestimation of high temps.
+- Fixed coordinates to match NWS settlement stations: NYC→Central Park (KNYC), Chicago→Midway (KMDW), Miami→MIA airport. Kalshi settles on NWS Daily Climate Report from specific stations, not city center coordinates.
+- Minimum edge raised: 8% → 12%. X research shows successful traders use 15%+ edge thresholds.
+- Payoff-scaled edge now starts from 12% base (was 8%).
+- v7.1 post-mortem: 2W/7L (-$123.41). GFS underestimated high temps by 3-5°F on 5/7 losses. Multi-model ensemble should reduce this systematic bias.
+
 ## 2026-03-11 — v7.1: Unblock Weather Signals, Disable BTC, Payoff-Scaled Edge
 
 - CRITICAL: v7 filters were too tight — zero weather signals generated in 2 days. Loosened filters while adding smarter edge requirements.

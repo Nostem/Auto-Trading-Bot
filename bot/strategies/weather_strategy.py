@@ -21,7 +21,7 @@ from bot.intelligence.signal_scorer import TradeSignal
 logger = logging.getLogger(__name__)
 
 # --- Config defaults (overridable via env) ---
-_WEATHER_MIN_EDGE = 0.08  # 8% minimum edge — fees eat everything below this
+_WEATHER_MIN_EDGE = 0.12  # 12% minimum edge — X research shows 15%+ for profitability
 _WEATHER_MAX_HOURS = 36.0  # trade markets closing within 36 hours
 _WEATHER_MIN_HOURS = 0.5  # skip markets closing in < 30 minutes
 _WEATHER_CONFIDENCE = 0.70  # higher than BTC — forecasts are well-calibrated
@@ -40,9 +40,10 @@ _OPEN_METEO_FORECAST_HOURS = 48
 
 # --- City coordinates for supported weather markets ---
 CITY_COORDS: dict[str, tuple[float, float]] = {
-    "NYC": (40.7128, -74.0060),
-    "CHI": (41.8781, -87.6298),
-    "MIA": (25.7617, -80.1918),
+    # Coordinates match NWS settlement stations (Kalshi resolves on NWS Climate Report)
+    "NYC": (40.7789, -73.9692),   # KNYC — Central Park (NOT JFK/LGA)
+    "CHI": (41.7868, -87.7522),   # KMDW — Midway Airport
+    "MIA": (25.7959, -80.2870),   # KMIA — Miami International
     "LA": (33.9425, -118.4081),
     "DAL": (32.7767, -96.7970),
     "AUS": (30.2672, -97.7431),
@@ -272,7 +273,7 @@ async def get_open_meteo_ensemble(city_key: str) -> Optional[dict]:
     url = (
         "https://ensemble-api.open-meteo.com/v1/ensemble"
         f"?latitude={latitude}&longitude={longitude}"
-        f"&hourly=temperature_2m&models=gfs_seamless&forecast_hours={_OPEN_METEO_FORECAST_HOURS}"
+        f"&hourly=temperature_2m&models=gfs_seamless,ecmwf_ifs025&forecast_hours={_OPEN_METEO_FORECAST_HOURS}"
     )
 
     try:
@@ -701,11 +702,11 @@ class WeatherStrategy:
 
         # Payoff-scaled minimum edge: higher entry prices need more edge
         # to overcome asymmetric risk (losing 70¢ vs gaining 30¢ at 70¢ entry)
-        # At 50¢: 8% (standard). At 65¢: ~15%. At 75¢: ~20%.
+        # At 50¢: 12% (base). At 65¢: ~18%. At 75¢: ~22%.
         if entry_price <= 0.50:
-            required_edge = self.min_edge  # 8%
+            required_edge = self.min_edge  # 12%
         else:
-            required_edge = self.min_edge + (entry_price - 0.50) * 0.48
+            required_edge = self.min_edge + (entry_price - 0.50) * 0.40
         if edge < required_edge:
             logger.debug(
                 "WeatherStrategy: skipping %s — edge %.1f%% below payoff-scaled min %.1f%% (entry=%.2f)",
